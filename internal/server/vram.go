@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -134,4 +135,25 @@ func sendNoLend(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusConflict)
 	w.Write([]byte(vramlend.NoLendBody))
+}
+
+// handleVramState answers the merged state of every ready lend model. The
+// reads go through ServeIfReady only and run in parallel, each bounded by the
+// state timeout. A model that is not ready, fails or runs out of time is left
+// out, so the answer is always 200, with empty lists when no lend model is
+// ready.
+func (s *Server) handleVramState(w http.ResponseWriter, r *http.Request) {
+	merged := vramlend.MergeStates(s.vramCards.ReadAll(r.Context()), func(modelID string, err error) {
+		s.logs.ProxyLogs.Warnf("<%s> vram: state answer: %v", modelID, err)
+	})
+
+	out, err := json.Marshal(merged)
+	if err != nil {
+		swaputil.SendResponse(w, r, http.StatusInternalServerError, "vram: "+err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(len(out)))
+	w.WriteHeader(http.StatusOK)
+	w.Write(out)
 }

@@ -446,6 +446,7 @@ func (s *Server) routes() {
 	// while they are ready: a /vram request never starts a model.
 	mux.Handle("POST /vram/lend", apiChain.ThenFunc(s.handleVramLend))
 	mux.Handle("POST /vram/return", apiChain.ThenFunc(s.handleVramReturn))
+	mux.Handle("GET /vram/state", apiChain.ThenFunc(s.handleVramState))
 
 	s.mux = mux
 	s.handler = chain.New(CreateRequestLogMiddleware(s.logs.HttpLogs), CreateCORSMiddleware(s.cfg)).Then(mux)
