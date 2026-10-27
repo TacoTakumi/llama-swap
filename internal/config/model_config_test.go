@@ -129,6 +129,22 @@ models:
 	assert.False(t, cfg.Models["default"].Compat.IgnoreWebsockets)
 }
 
+func TestConfig_ModelVramLend(t *testing.T) {
+	content := `
+models:
+  lend:
+    cmd: lend --port ${PORT}
+    vramLend: true
+  default:
+    cmd: default --port ${PORT}
+`
+
+	cfg, err := LoadConfigFromReader(strings.NewReader(content))
+	assert.NoError(t, err)
+	assert.True(t, cfg.Models["lend"].VramLend)
+	assert.False(t, cfg.Models["default"].VramLend)
+}
+
 func TestConfig_SetParamsByIDAutoAlias(t *testing.T) {
 	content := `
 models:

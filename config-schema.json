@@ -551,6 +551,11 @@
                         "default": false,
                         "description": "If true the model will not show up in /v1/models responses. It can still be used as normal in API requests."
                     },
+                    "vramLend": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "If true the upstream serves the VRAM Lend /vram routes and llama-swap forwards /vram/lend, /vram/return and /vram/state to it while it is ready. Models without it are never sent /vram requests."
+                    },
                     "timeouts": {
                         "$ref": "#/definitions/timeouts"
                     },

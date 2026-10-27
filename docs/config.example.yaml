@@ -506,6 +506,12 @@ models:
     # - optional, default: undefined (use global setting)
     sendLoadingState: false
 
+    # vramLend: the upstream serves the VRAM Lend /vram routes
+    # - optional, default: false
+    # - llama-swap forwards /vram/lend, /vram/return and /vram/state only to
+    #   ready models with this set, and never loads a model to do so
+    vramLend: false
+
     # timeouts: configure proxy connection timeouts for this model
     # - optional, defaults shown below
     # - useful for models running on slower hardware that need longer timeouts

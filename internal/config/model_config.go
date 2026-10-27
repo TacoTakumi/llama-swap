@@ -150,6 +150,10 @@ type ModelConfig struct {
 	// Compatibility settings for upstream applications.
 	Compat CompatConfig `yaml:"compat"`
 
+	// VramLend marks a model whose upstream serves the VRAM Lend /vram
+	// routes. Only these models are sent /vram requests.
+	VramLend bool `yaml:"vramLend"`
+
 	// Capabilities defines what modalities and features the model supports.
 	Capabilities ModelCapConfig `yaml:"capabilities"`
 
