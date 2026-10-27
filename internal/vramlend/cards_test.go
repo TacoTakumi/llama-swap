@@ -423,10 +423,141 @@ func TestVramLend_CardsRejectBadAddress(t *testing.T) {
 	assertNoStart(t, f)
 }
 
+func TestVramLend_CardsRunTokenStableWithinRun(t *testing.T) {
+	e := &fakeEngine{ready: true, gpus: []string{"0000:0a:00.0"}}
+	f := newFakeRouter(map[string]*fakeEngine{"lend": e})
+	c := newTestCards(t, f, time.Second, "lend")
+
+	c.Ready("lend")
+	run := c.Run("lend")
+	if len(run) != 8 || strings.Trim(run, "0123456789abcdef") != "" {
+		t.Fatalf("Run=%q want 8 lowercase hex characters", run)
+	}
+	requireHolders(t, c, "0000:0a:00.0", "lend")
+	c.ReadAll(context.Background())
+	if got := c.Run("lend"); got != run {
+		t.Errorf("second Run=%q want %q: the token changed within one run", got, run)
+	}
+	if !c.IsRun("lend", run) {
+		t.Errorf("IsRun(%q)=false for the current run", run)
+	}
+	for _, other := range []string{"", "00000000", run + "0"} {
+		if c.IsRun("lend", other) {
+			t.Errorf("IsRun(%q)=true, want false", other)
+		}
+	}
+	assertNoStart(t, f)
+}
+
+func TestVramLend_CardsRunTokenChangesAfterRestart(t *testing.T) {
+	e := &fakeEngine{ready: true, gpus: []string{"0000:0a:00.0"}}
+	f := newFakeRouter(map[string]*fakeEngine{"lend": e})
+	c := newTestCards(t, f, time.Second, "lend")
+
+	c.Ready("lend")
+	old := c.Run("lend")
+
+	// The process stops and starts again: every state on the way is not
+	// ready, and each one drops the run.
+	e.set(false)
+	c.Drop("lend")
+	if c.IsRun("lend", old) {
+		t.Error("the old token is still current after Drop")
+	}
+	c.Drop("lend")
+	e.set(true, "0000:0a:00.0")
+	c.Ready("lend")
+
+	run := c.Run("lend")
+	if run == "" || run == old {
+		t.Errorf("Run after restart=%q want a new token, old was %q", run, old)
+	}
+	if c.IsRun("lend", old) {
+		t.Error("the old token is current in the new run")
+	}
+	assertNoStart(t, f)
+}
+
+func TestVramLend_CardsReadyKeepsTokenFromBeforeReadyEvent(t *testing.T) {
+	// A lend can reach a new run before its ready event reaches Ready. The
+	// token it got belongs to this run, so Ready must not replace it.
+	e := &fakeEngine{ready: true, gpus: []string{"0000:0a:00.0"}}
+	f := newFakeRouter(map[string]*fakeEngine{"lend": e})
+	c := newTestCards(t, f, time.Second, "lend")
+
+	c.Drop("lend")
+	requireHolders(t, c, "0000:0a:00.0", "lend")
+	run := c.Run("lend")
+	c.Ready("lend")
+	if got := c.Run("lend"); got != run {
+		t.Errorf("Run after Ready=%q want %q", got, run)
+	}
+	assertNoStart(t, f)
+}
+
+func TestVramLend_CardsRunTokenOnlyForLendModels(t *testing.T) {
+	f := newFakeRouter(map[string]*fakeEngine{})
+	c := newTestCards(t, f, time.Second, "lend")
+
+	if got := c.Run("other"); got != "" {
+		t.Errorf("Run(other)=%q want empty", got)
+	}
+	if c.IsRun("lend", "") {
+		t.Error("IsRun with an empty token is true")
+	}
+	if c.IsRun("lend", "00000000") {
+		t.Error("IsRun is true for a model that has no token yet")
+	}
+}
+
+func TestVramLend_CardsReadAllCarriesRunToken(t *testing.T) {
+	e := &fakeEngine{ready: true, gpus: []string{"0000:0a:00.0"}}
+	f := newFakeRouter(map[string]*fakeEngine{"lend": e})
+	c := newTestCards(t, f, time.Second, "lend")
+
+	c.Ready("lend")
+	states := c.ReadAll(context.Background())
+	if got, want := states["lend"].Run, c.Run("lend"); got == "" || got != want {
+		t.Errorf("state Run=%q want the current token %q", got, want)
+	}
+	assertNoStart(t, f)
+}
+
+func TestVramLend_CardsReadAllLeavesOutRestartedModel(t *testing.T) {
+	// A model that leaves the ready state during the read is left out: the
+	// leases it listed cannot be tied to one run.
+	gate := make(chan struct{})
+	e := &fakeEngine{ready: true, gpus: []string{"0000:0a:00.0"}, gate: gate}
+	f := newFakeRouter(map[string]*fakeEngine{"lend": e})
+	c := newTestCards(t, f, 5*time.Second, "lend")
+
+	result := make(chan map[string]State, 1)
+	go func() { result <- c.ReadAll(context.Background()) }()
+	waitReads(t, e, 1)
+	c.Drop("lend")
+	close(gate)
+
+	select {
+	case states := <-result:
+		if len(states) != 0 {
+			t.Errorf("states=%+v want none", states)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ReadAll never answered")
+	}
+	assertNoStart(t, f)
+}
+
 func TestVramLend_CardsNilIsSafe(t *testing.T) {
 	var c *Cards
 	c.Ready("lend")
 	c.Drop("lend")
+	if got := c.Run("lend"); got != "" {
+		t.Errorf("nil Cards Run=%q want empty", got)
+	}
+	if c.IsRun("lend", "00000000") {
+		t.Error("nil Cards IsRun is true")
+	}
 	if got := c.Holders(context.Background(), "0000:0a:00.0"); len(got) != 0 {
 		t.Error("nil Cards found a holder")
 	}

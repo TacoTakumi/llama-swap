@@ -2,6 +2,8 @@ package vramlend
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +28,10 @@ type ServeFunc func(modelID string, w http.ResponseWriter, req *http.Request) bo
 type State struct {
 	GPUs   []GPUState `json:"gpus"`
 	Leases []Lease    `json:"leases"`
+
+	// Run is the run token of the process run that answered, set by
+	// Cards.ReadAll. It is not part of the engine's answer.
+	Run string `json:"-"`
 }
 
 type GPUState struct {
@@ -60,6 +66,9 @@ type Cards struct {
 
 	mu   sync.Mutex
 	runs map[string]*cardRun
+	// tokens holds the run token of each model's current process run. See
+	// Run for how a token is tied to one run.
+	tokens map[string]string
 }
 
 // cardRun is one state read for one process run. cards is written before
@@ -79,12 +88,13 @@ func NewCards(ctx context.Context, models []string, serve ServeFunc, logger *log
 		serve:   serve,
 		logger:  logger,
 		runs:    make(map[string]*cardRun),
+		tokens:  make(map[string]string),
 	}
 }
 
 // Ready starts a background read of the model's cards for its new process
-// run, replacing any list from before. It returns at once, so it is safe to
-// call from the event dispatcher.
+// run, replacing any list from before, and makes sure the run has a run
+// token. It returns at once, so it is safe to call from the event dispatcher.
 func (c *Cards) Ready(modelID string) {
 	if c == nil || !slices.Contains(c.models, modelID) {
 		return
@@ -92,10 +102,12 @@ func (c *Cards) Ready(modelID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.startLocked(modelID)
+	c.tokenLocked(modelID)
 }
 
-// Drop forgets the model's cards. Call it when the model leaves the ready
-// state; the cards of its next run are read when it is ready again.
+// Drop forgets the model's cards and run token. Call it when the model
+// leaves the ready state; the cards of its next run are read when it is
+// ready again, and the next run gets a new token.
 func (c *Cards) Drop(modelID string) {
 	if c == nil {
 		return
@@ -103,6 +115,57 @@ func (c *Cards) Drop(modelID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.runs, modelID)
+	delete(c.tokens, modelID)
+}
+
+// Run returns the run token of the model's current process run, choosing one
+// if the run has none yet. Lease ids carry it, so an id from an earlier run
+// never names a lease of this one. It returns "" for a model that does not
+// lend.
+//
+// A token lives from its first use until the next Drop. Drop runs on every
+// state that is not ready, and a process run always passes through one
+// (starting) before it is ready, so a token that exists was chosen in the
+// current run. That is why Ready keeps a token it finds: an on-demand lend
+// or state read can reach a new run before its ready event reaches Ready,
+// and the leases lent in that window must keep their ids.
+func (c *Cards) Run(modelID string) string {
+	if c == nil || !slices.Contains(c.models, modelID) {
+		return ""
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.tokenLocked(modelID)
+}
+
+// IsRun reports whether run is the token of the model's current process
+// run. It never chooses a token: a model with none has lent nothing yet.
+func (c *Cards) IsRun(modelID, run string) bool {
+	if c == nil || run == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.tokens[modelID] == run
+}
+
+// tokenLocked returns the model's run token, choosing one if there is none.
+// c.mu must be held.
+func (c *Cards) tokenLocked(modelID string) string {
+	if tok, ok := c.tokens[modelID]; ok {
+		return tok
+	}
+	tok := newRunToken()
+	c.tokens[modelID] = tok
+	return tok
+}
+
+// newRunToken returns 8 random lowercase hex characters, which never hold
+// the ":" that separates the parts of a lease id.
+func newRunToken() string {
+	b := make([]byte, 4)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 // Holders returns every lend model that uses card, a normalized PCI address,
@@ -143,7 +206,10 @@ func (c *Cards) Holders(ctx context.Context, card string) []string {
 }
 
 // ReadAll reads the state of every lend model in parallel, each bounded by
-// Timeout. A model that is not ready, fails or runs out of time is left out.
+// Timeout. A model that is not ready, fails or runs out of time is left out,
+// and so is one whose run token changed during the read, since its leases
+// cannot be tied to one run. Each state's Run is the token of the run that
+// answered.
 func (c *Cards) ReadAll(ctx context.Context) map[string]State {
 	states := make(map[string]State)
 	if c == nil {
@@ -154,11 +220,18 @@ func (c *Cards) ReadAll(ctx context.Context) map[string]State {
 	var wg sync.WaitGroup
 	for _, model := range c.models {
 		wg.Go(func() {
+			// The token is taken before the read, so a restart during the
+			// read cannot give the old run's leases the new run's token.
+			run := c.Run(model)
 			st, err := c.readState(ctx, model)
 			if err != nil {
 				c.logReadError(model, err)
 				return
 			}
+			if !c.IsRun(model, run) {
+				return
+			}
+			st.Run = run
 			mu.Lock()
 			states[model] = st
 			mu.Unlock()

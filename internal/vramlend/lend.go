@@ -46,11 +46,19 @@ func LendCard(body []byte) (string, error) {
 	return NormalizePCI(gpu.Str)
 }
 
-// PrefixLeaseID rewrites the id of an engine's lease answer to
-// "<modelID>:<engine id>", so a later return can be routed back to the model
-// that lent it. Every other field is kept as the engine sent it. The engine's
-// id may be a JSON string or number; the new id is always a string.
-func PrefixLeaseID(modelID string, body []byte) ([]byte, error) {
+// LeaseID returns the id llama-swap gives a lease: "<modelID>:<run>:<engine
+// id>", where run is the run token of the process run that lent it. Engines
+// start their ids again in each run, so the token keeps an id from an earlier
+// run from naming a lease of this one.
+func LeaseID(modelID, run, engineID string) string {
+	return modelID + ":" + run + ":" + engineID
+}
+
+// PrefixLeaseID rewrites the id of an engine's lease answer to the LeaseID
+// of modelID and run, so a later return can be routed back to the model and
+// run that lent it. Every other field is kept as the engine sent it. The
+// engine's id may be a JSON string or number; the new id is always a string.
+func PrefixLeaseID(modelID, run string, body []byte) ([]byte, error) {
 	if !gjson.ValidBytes(body) || !gjson.ParseBytes(body).IsObject() {
 		return nil, errors.New("lease answer is not a JSON object")
 	}
@@ -68,7 +76,7 @@ func PrefixLeaseID(modelID string, body []byte) ([]byte, error) {
 		return nil, errors.New("lease answer has an empty id")
 	}
 
-	out, err := sjson.SetBytes(body, "id", modelID+":"+id)
+	out, err := sjson.SetBytes(body, "id", LeaseID(modelID, run, id))
 	if err != nil {
 		return nil, fmt.Errorf("rewriting the lease id: %w", err)
 	}
@@ -96,21 +104,26 @@ func ReturnID(body []byte) (string, error) {
 	return id, nil
 }
 
-// SplitLeaseID splits a lease id that PrefixLeaseID made into the model id
-// and the engine id. Model ids and engine ids may both contain colons, so
-// the split is not at a fixed colon: the model is the longest of models
-// that, followed by ":", starts id. It returns false when no model matches
-// or the engine id is empty.
-func SplitLeaseID(id string, models []string) (model, engineID string, ok bool) {
+// SplitLeaseID splits a lease id that LeaseID made into the model id, the
+// run token and the engine id. Model ids and engine ids may both contain
+// colons, so the split is not at a fixed colon: the model is the longest of
+// models that, followed by ":", starts id. The run token runs from there to
+// the next ":", and the rest is the engine id. It returns false when no
+// model matches or the run token or engine id is missing or empty.
+func SplitLeaseID(id string, models []string) (model, run, engineID string, ok bool) {
 	for _, m := range models {
 		if len(m) > len(model) && strings.HasPrefix(id, m+":") {
 			model = m
 		}
 	}
-	if model == "" || len(id) == len(model)+1 {
-		return "", "", false
+	if model == "" {
+		return "", "", "", false
 	}
-	return model, id[len(model)+1:], true
+	run, engineID, found := strings.Cut(id[len(model)+1:], ":")
+	if !found || run == "" || engineID == "" {
+		return "", "", "", false
+	}
+	return model, run, engineID, true
 }
 
 // SetReturnID rewrites the id of a POST /vram/return body to engineID, the

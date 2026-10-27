@@ -111,7 +111,7 @@ func TestServer_VramStateNothingRunning(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
-	assert.JSONEq(t, `{"gpus":[],"leases":[]}`, w.Body.String())
+	assert.JSONEq(t, withRun(s, `{"gpus":[],"leases":[]}`), w.Body.String())
 	assert.Zero(t, f.starts.Load(), "no /vram request may go through the load path")
 }
 
@@ -122,7 +122,7 @@ func TestServer_VramStateNoModelLends(t *testing.T) {
 	w := getVramState(s)
 
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.JSONEq(t, `{"gpus":[],"leases":[]}`, w.Body.String())
+	assert.JSONEq(t, withRun(s, `{"gpus":[],"leases":[]}`), w.Body.String())
 	assert.Zero(t, f.starts.Load(), "no /vram request may go through the load path")
 }
 
@@ -136,16 +136,16 @@ func TestServer_VramStateSharedCard(t *testing.T) {
 	w := getVramState(s)
 
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.JSONEq(t, `{
+	assert.JSONEq(t, withRun(s, `{
 		"gpus": [
 			{"gpu":"0000:0a:00.0","lendable":8192,"lent":4096,"model":"a"},
 			{"gpu":"0000:0a:00.0","lendable":1024,"lent":2048,"model":"b"}
 		],
 		"leases": [
-			{"id":"a:7","gpu":"0000:0a:00.0","mib":4096,"model":"a"},
-			{"id":"b:3","gpu":"0000:0a:00.0","mib":2048,"model":"b"}
+			{"id":"a:{run:a}:7","gpu":"0000:0a:00.0","mib":4096,"model":"a"},
+			{"id":"b:{run:b}:3","gpu":"0000:0a:00.0","mib":2048,"model":"b"}
 		]
-	}`, w.Body.String())
+	}`), w.Body.String())
 	assert.Zero(t, f.starts.Load(), "no /vram request may go through the load path")
 }
 
@@ -165,10 +165,10 @@ func TestServer_VramStateLeavesOutFailingEngine(t *testing.T) {
 			w := getVramState(s)
 
 			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-			assert.JSONEq(t, `{
+			assert.JSONEq(t, withRun(s, `{
 				"gpus": [{"gpu":"0000:0b:00.0","lendable":8192,"lent":64,"model":"b"}],
-				"leases": [{"id":"b:1","gpu":"0000:0b:00.0","mib":64,"model":"b"}]
-			}`, w.Body.String())
+				"leases": [{"id":"b:{run:b}:1","gpu":"0000:0b:00.0","mib":64,"model":"b"}]
+			}`), w.Body.String())
 			assert.Zero(t, f.starts.Load(), "no /vram request may go through the load path")
 		})
 	}
@@ -184,10 +184,10 @@ func TestServer_VramStateSkipsModelWithoutVramLend(t *testing.T) {
 	w := getVramState(s)
 
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.JSONEq(t, `{
+	assert.JSONEq(t, withRun(s, `{
 		"gpus": [{"gpu":"0000:0a:00.0","lendable":8192,"lent":0,"model":"lend"}],
-		"leases": [{"id":"lend:1","gpu":"0000:0a:00.0","mib":0,"model":"lend"}]
-	}`, w.Body.String())
+		"leases": [{"id":"lend:{run:lend}:1","gpu":"0000:0a:00.0","mib":0,"model":"lend"}]
+	}`), w.Body.String())
 	assert.Zero(t, f.engines["plain"].vramCalls.Load(), "a model without vramLend gets no /vram request")
 	assert.Zero(t, f.starts.Load(), "no /vram request may go through the load path")
 }
@@ -216,16 +216,16 @@ func TestServer_VramStateReadsInParallel(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	assert.Less(t, elapsed, scaled(25), "two engines must be read in parallel")
-	assert.JSONEq(t, `{
+	assert.JSONEq(t, withRun(s, `{
 		"gpus": [
 			{"gpu":"0000:0a:00.0","lendable":8192,"lent":0,"model":"a"},
 			{"gpu":"0000:0b:00.0","lendable":4096,"lent":0,"model":"b"}
 		],
 		"leases": [
-			{"id":"a:1","gpu":"0000:0a:00.0","mib":0,"model":"a"},
-			{"id":"b:2","gpu":"0000:0b:00.0","mib":0,"model":"b"}
+			{"id":"a:{run:a}:1","gpu":"0000:0a:00.0","mib":0,"model":"a"},
+			{"id":"b:{run:b}:2","gpu":"0000:0b:00.0","mib":0,"model":"b"}
 		]
-	}`, w.Body.String())
+	}`), w.Body.String())
 	assert.Zero(t, f.starts.Load(), "no /vram request may go through the load path")
 }
 
@@ -243,10 +243,10 @@ func TestServer_VramStateLeavesOutSlowEngine(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	assert.GreaterOrEqual(t, elapsed, stateTimeout, "the answer waits for the timeout")
 	assert.Less(t, elapsed, scaled(37), "the slow engine must not hold the answer past the timeout")
-	assert.JSONEq(t, `{
+	assert.JSONEq(t, withRun(s, `{
 		"gpus": [{"gpu":"0000:0a:00.0","lendable":8192,"lent":0,"model":"a"}],
-		"leases": [{"id":"a:1","gpu":"0000:0a:00.0","mib":0,"model":"a"}]
-	}`, w.Body.String())
+		"leases": [{"id":"a:{run:a}:1","gpu":"0000:0a:00.0","mib":0,"model":"a"}]
+	}`), w.Body.String())
 	assert.Zero(t, f.starts.Load(), "no /vram request may go through the load path")
 }
 
@@ -276,7 +276,7 @@ models:
 	// While the model is stopped the state is empty and starts nothing.
 	w := getVramState(s)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.JSONEq(t, `{"gpus":[],"leases":[]}`, w.Body.String())
+	assert.JSONEq(t, withRun(s, `{"gpus":[],"leases":[]}`), w.Body.String())
 	assert.Never(t, func() bool { return len(s.local.RunningModels()) != 0 },
 		200*time.Millisecond, 10*time.Millisecond, "a state read must not start the model")
 
@@ -288,15 +288,16 @@ models:
 
 	w = postLend(s, `{"gpu":"0B:00.0","mib":2048}`)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Equal(t, leaseID(s, "lend", "1"), answerID(t, w), "the lend answer and the state carry the same run token")
 
 	w = getVramState(s)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.JSONEq(t, `{
+	assert.JSONEq(t, withRun(s, `{
 		"gpus": [
 			{"gpu":"0000:0a:00.0","lendable":8192,"lent":0,"model":"lend"},
 			{"gpu":"0000:0b:00.0","lendable":8192,"lent":2048,"model":"lend"}
 		],
-		"leases": [{"id":"lend:1","gpu":"0000:0b:00.0","mib":2048,"model":"lend"}]
-	}`, w.Body.String())
+		"leases": [{"id":"lend:{run:lend}:1","gpu":"0000:0b:00.0","mib":2048,"model":"lend"}]
+	}`), w.Body.String())
 	assert.Equal(t, map[string]process.ProcessState{"lend": process.StateReady}, s.local.RunningModels())
 }

@@ -18,7 +18,7 @@ const maxVramBodyBytes = 64 << 10
 
 // handleVramLend asks the ready lend models whose card lists hold the
 // requested card, in model-id order, and prefixes the lease id of a 200
-// answer with the model id. A 409 moves on to the next model; any other
+// answer with the model id and its run token. A 409 moves on to the next model; any other
 // answer is passed through unchanged and ends the search. The lend goes
 // through ServeIfReady only, so it never starts, queues or swaps a model.
 // When every model answers 409, or none can serve the lend, the answer is
@@ -43,6 +43,11 @@ func (s *Server) handleVramLend(w http.ResponseWriter, r *http.Request) {
 
 	var maxMiB int64
 	for _, modelID := range holders {
+		// The token is taken before the lend: if the model restarts in
+		// between, the lease carries the old run's token and a return of it
+		// answers 404, rather than the new run's token naming an old lease.
+		run := s.vramCards.Run(modelID)
+
 		// The engine gets the body exactly as the borrower sent it.
 		fwd := r.Clone(r.Context())
 		fwd.Body = io.NopCloser(bytes.NewReader(body))
@@ -59,7 +64,7 @@ func (s *Server) handleVramLend(w http.ResponseWriter, r *http.Request) {
 			maxMiB = max(maxMiB, vramlend.MaxMiB(out))
 			continue
 		case http.StatusOK:
-			out, err = vramlend.PrefixLeaseID(modelID, out)
+			out, err = vramlend.PrefixLeaseID(modelID, run, out)
 			if err != nil {
 				s.logs.ProxyLogs.Warnf("<%s> vram: lend answer: %v", modelID, err)
 				swaputil.SendResponse(w, r, http.StatusBadGateway, "vram: "+err.Error())
@@ -81,10 +86,12 @@ func (s *Server) handleVramLend(w http.ResponseWriter, r *http.Request) {
 	w.Write(vramlend.NoLendAnswer(maxMiB))
 }
 
-// handleVramReturn sends a return of "<model id>:<engine id>" to that lend
-// model with the engine id alone, and prefixes the id of a 200 answer again.
-// Like a lend it goes through ServeIfReady only. A return whose id names no
-// ready lend model answers 404, and no engine gets it.
+// handleVramReturn sends a return of "<model id>:<run>:<engine id>" to that
+// lend model with the engine id alone, and prefixes the id of a 200 answer
+// again. Like a lend it goes through ServeIfReady only. A return whose id
+// names no ready lend model, or whose run token is not the model's current
+// run, answers 404, and no engine gets it: engines start their ids again in
+// each run, so an id from an earlier run could name another borrower's lease.
 func (s *Server) handleVramReturn(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxVramBodyBytes))
 	if err != nil {
@@ -103,8 +110,8 @@ func (s *Server) handleVramReturn(w http.ResponseWriter, r *http.Request) {
 			models = append(models, mid)
 		}
 	}
-	modelID, engineID, ok := vramlend.SplitLeaseID(id, models)
-	if !ok {
+	modelID, run, engineID, ok := vramlend.SplitLeaseID(id, models)
+	if !ok || !s.vramCards.IsRun(modelID, run) {
 		swaputil.SendResponse(w, r, http.StatusNotFound, "vram: no lend model has lease "+id)
 		return
 	}
@@ -128,7 +135,7 @@ func (s *Server) handleVramReturn(w http.ResponseWriter, r *http.Request) {
 	if rec.Code == http.StatusOK {
 		// The engine has the memory back, so an answer without a usable id
 		// still goes out as the engine sent it.
-		if prefixed, err := vramlend.PrefixLeaseID(modelID, out); err == nil {
+		if prefixed, err := vramlend.PrefixLeaseID(modelID, run, out); err == nil {
 			out = prefixed
 		} else {
 			s.logs.ProxyLogs.Warnf("<%s> vram: return answer: %v", modelID, err)

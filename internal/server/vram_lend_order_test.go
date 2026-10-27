@@ -59,7 +59,7 @@ func TestServer_VramLendOrderNextAfterConflict(t *testing.T) {
 	w := postLend(s, body)
 
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.JSONEq(t, `{"id":"b:7","gpu":"0a:00.0","mib":2048}`, w.Body.String())
+	assert.JSONEq(t, withRun(s, `{"id":"b:{run:b}:7","gpu":"0a:00.0","mib":2048}`), w.Body.String())
 	_, aLends := f.engines["a"].calls()
 	_, bLends := f.engines["b"].calls()
 	assert.Equal(t, []string{body}, aLends, "the first model is asked first")
@@ -132,7 +132,7 @@ func TestServer_VramLendOrderSkipsModelThatLeftReady(t *testing.T) {
 	w := postLend(s, `{"gpu":"0a:00.0","mib":2048}`)
 
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.JSONEq(t, `{"id":"b:7","gpu":"0a:00.0","mib":2048}`, w.Body.String())
+	assert.JSONEq(t, withRun(s, `{"id":"b:{run:b}:7","gpu":"0a:00.0","mib":2048}`), w.Body.String())
 	assert.Zero(t, lendCount(f.engines["a"]))
 	assert.Zero(t, f.starts.Load(), "no /vram request may go through the load path")
 }
@@ -154,7 +154,7 @@ func TestServer_VramLendOrderByModelID(t *testing.T) {
 		w := postLend(s, `{"gpu":"0a:00.0","mib":2048}`)
 
 		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-		assert.JSONEq(t, `{"id":"aa:7","gpu":"0a:00.0","mib":2048}`, w.Body.String())
+		assert.JSONEq(t, withRun(s, `{"id":"aa:{run:aa}:7","gpu":"0a:00.0","mib":2048}`), w.Body.String())
 		assert.Zero(t, lendCount(f.engines["mm"]))
 		assert.Zero(t, lendCount(f.engines["zz"]))
 		assert.Zero(t, f.starts.Load(), "no /vram request may go through the load path")

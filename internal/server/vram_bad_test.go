@@ -123,23 +123,23 @@ func TestServer_VramAuth(t *testing.T) {
 	routes := []struct {
 		method, path, body, want string
 	}{
-		{http.MethodPost, "/vram/lend", `{"gpu":"0000:0a:00.0","mib":2048}`, `{"id":"a:7","gpu":"0000:0a:00.0","mib":2048}`},
-		{http.MethodPost, "/vram/return", `{"id":"a:7"}`, `{"id":"a:7","gpu":"0000:0a:00.0","mib":2048}`},
+		{http.MethodPost, "/vram/lend", `{"gpu":"0000:0a:00.0","mib":2048}`, `{"id":"a:{run:a}:7","gpu":"0000:0a:00.0","mib":2048}`},
+		{http.MethodPost, "/vram/return", `{"id":"a:{run:a}:7"}`, `{"id":"a:{run:a}:7","gpu":"0000:0a:00.0","mib":2048}`},
 		{http.MethodGet, "/vram/state", ``, `{"gpus":[{"gpu":"0000:0a:00.0","lendable":8192,"lent":0,"model":"a"}],"leases":[]}`},
 	}
 	for _, rt := range routes {
 		msg := rt.method + " " + rt.path
 		for _, key := range []string{"", "wrong"} {
 			f, s := badFixture(t, "secret")
-			w := vramRequest(s, rt.method, rt.path, rt.body, key)
+			w := vramRequest(s, rt.method, rt.path, withRun(s, rt.body), key)
 			assert.Equal(t, http.StatusUnauthorized, w.Code, "%s key %q: %s", msg, key, w.Body.String())
 			assertNoEngine(t, f, msg)
 		}
 
 		f, s := badFixture(t, "secret")
-		w := vramRequest(s, rt.method, rt.path, rt.body, "secret")
+		w := vramRequest(s, rt.method, rt.path, withRun(s, rt.body), "secret")
 		require.Equal(t, http.StatusOK, w.Code, "%s: %s", msg, w.Body.String())
-		assert.JSONEq(t, rt.want, w.Body.String(), msg)
+		assert.JSONEq(t, withRun(s, rt.want), w.Body.String(), msg)
 		assert.Zero(t, f.starts.Load(), "%s: no /vram request may go through the load path", msg)
 	}
 }

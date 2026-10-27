@@ -32,25 +32,46 @@ func TestVramReturnRoute_ReturnID(t *testing.T) {
 func TestVramReturnRoute_SplitLeaseID(t *testing.T) {
 	models := []string{"a", "a:b", "qwen3:8b"}
 	tests := []struct {
-		id, model, engine string
+		id, model, run, engine string
 	}{
-		{"a:7", "a", "7"},
-		{"a:b:7", "a:b", "7"},
-		{"a:c:7", "a", "c:7"},
-		{"qwen3:8b:12", "qwen3:8b", "12"},
+		{"a:r1:7", "a", "r1", "7"},
+		{"a:b:r1:7", "a:b", "r1", "7"},
+		// the model is the longest match; the run ends at the next colon
+		{"a:c:7", "a", "c", "7"},
+		// the engine id is opaque and keeps its colons
+		{"a:r1:x:7", "a", "r1", "x:7"},
+		{"qwen3:8b:0f3a9c2e:12", "qwen3:8b", "0f3a9c2e", "12"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.id, func(t *testing.T) {
-			model, engine, ok := SplitLeaseID(tt.id, models)
+			model, run, engine, ok := SplitLeaseID(tt.id, models)
 			require.True(t, ok)
 			assert.Equal(t, tt.model, model)
+			assert.Equal(t, tt.run, run)
 			assert.Equal(t, tt.engine, engine)
 		})
 	}
 
-	for _, id := range []string{"7", "a", "a:", "b:7", "qwen3:7", ":7", ""} {
-		_, _, ok := SplitLeaseID(id, models)
+	for _, id := range []string{
+		"7", "a", "a:", "b:r1:7", "qwen3:r1:7", ":r1:7", "",
+		// no run token
+		"a:7", "a:b:7", "qwen3:8b:12",
+		// empty run token or engine id
+		"a::7", "a:r1:", "a::",
+	} {
+		_, _, _, ok := SplitLeaseID(id, models)
 		assert.False(t, ok, "id %q", id)
+	}
+}
+
+func TestVramReturnRoute_LeaseIDRoundTrip(t *testing.T) {
+	models := []string{"a", "a:b"}
+	for _, engineID := range []string{"1", "x:7", "0000:0a:00.0#3"} {
+		model, run, engine, ok := SplitLeaseID(LeaseID("a:b", "0f3a9c2e", engineID), models)
+		require.True(t, ok, "engine id %q", engineID)
+		assert.Equal(t, "a:b", model)
+		assert.Equal(t, "0f3a9c2e", run)
+		assert.Equal(t, engineID, engine)
 	}
 }
 

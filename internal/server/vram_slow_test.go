@@ -101,7 +101,7 @@ func TestServer_VramSlowEngineLend(t *testing.T) {
 	elapsed := time.Since(start)
 
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.JSONEq(t, `{"id":"a:7","gpu":"0000:0a:00.0","mib":2048}`, w.Body.String())
+	assert.JSONEq(t, withRun(s, `{"id":"a:{run:a}:7","gpu":"0000:0a:00.0","mib":2048}`), w.Body.String())
 	assert.GreaterOrEqual(t, elapsed, slowAnswerDelay, "the answer is the engine's late one")
 	assert.Equal(t, int32(1), e.lends.Load())
 	assert.Zero(t, starts.Load(), "no /vram request may go through the load path")
@@ -113,11 +113,11 @@ func TestServer_VramSlowEngineReturn(t *testing.T) {
 	s := slowServer(t, e, &starts)
 
 	start := time.Now()
-	w := postReturn(s, `{"id":"a:7"}`)
+	w := postReturn(s, withRun(s, `{"id":"a:{run:a}:7"}`))
 	elapsed := time.Since(start)
 
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.JSONEq(t, `{"id":"a:7","gpu":"0000:0a:00.0","mib":2048}`, w.Body.String())
+	assert.JSONEq(t, withRun(s, `{"id":"a:{run:a}:7","gpu":"0000:0a:00.0","mib":2048}`), w.Body.String())
 	assert.GreaterOrEqual(t, elapsed, slowAnswerDelay, "the answer is the engine's late one")
 	assert.Equal(t, int32(1), e.returns.Load())
 	assert.Zero(t, starts.Load(), "no /vram request may go through the load path")

@@ -209,7 +209,7 @@ func TestServer_VramStopDuringReturn(t *testing.T) {
 			f := newStopFixture(t, tc.status, tc.body)
 			s := f.server()
 
-			w := f.stopDuring(t, func() *httptest.ResponseRecorder { return postReturn(s, `{"id":"a:7"}`) }, "/vram/return")
+			w := f.stopDuring(t, func() *httptest.ResponseRecorder { return postReturn(s, withRun(s, `{"id":"a:{run:a}:7"}`)) }, "/vram/return")
 
 			assert.Equal(t, tc.want, w.Code, w.Body.String())
 			assert.Equal(t, tc.body, w.Body.String(), "the process's answer is passed through")
@@ -218,7 +218,7 @@ func TestServer_VramStopDuringReturn(t *testing.T) {
 			assert.Zero(t, f.starts.Load(), "no /vram request may go through the load path")
 
 			// A return to the stopped model answers 404 and starts nothing.
-			w = postReturn(s, `{"id":"a:7"}`)
+			w = postReturn(s, withRun(s, `{"id":"a:{run:a}:7"}`))
 			assert.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
 			assert.Len(t, f.engine.requests(), 1)
 			assert.Zero(t, f.starts.Load(), "no /vram request may go through the load path")

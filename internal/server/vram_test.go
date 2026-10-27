@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ import (
 	"github.com/mostlygeek/llama-swap/internal/logmon"
 	"github.com/mostlygeek/llama-swap/internal/process"
 	"github.com/mostlygeek/llama-swap/internal/store/sqlite"
+	"github.com/mostlygeek/llama-swap/internal/vramlend"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -127,6 +129,33 @@ func lendModels(lend map[string]bool) config.Config {
 	return cfg
 }
 
+var runPlaceholder = regexp.MustCompile(`\{run:([^}]+)\}`)
+
+// withRun replaces each "{run:<model id>}" in text with that model's current
+// run token on s, choosing one if the run has none yet, so a test can write
+// the lease ids the server gives out.
+func withRun(s *Server, text string) string {
+	return runPlaceholder.ReplaceAllStringFunc(text, func(m string) string {
+		return s.vramCards.Run(runPlaceholder.FindStringSubmatch(m)[1])
+	})
+}
+
+// leaseID is the id the server gives the engine lease engineID of model in
+// the model's current run.
+func leaseID(s *Server, model, engineID string) string {
+	return vramlend.LeaseID(model, s.vramCards.Run(model), engineID)
+}
+
+// answerID returns the id of a lend or return answer.
+func answerID(t *testing.T, w *httptest.ResponseRecorder) string {
+	t.Helper()
+	var answer struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &answer), w.Body.String())
+	return answer.ID
+}
+
 func postLend(s *Server, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/vram/lend", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -155,7 +184,7 @@ func TestServer_VramLendRouteReachesHolder(t *testing.T) {
 	w := postLend(s, body)
 
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.JSONEq(t, `{"id":"b:7","gpu":"0B:00.0","mib":2048}`, w.Body.String())
+	assert.JSONEq(t, withRun(s, `{"id":"b:{run:b}:7","gpu":"0B:00.0","mib":2048}`), w.Body.String())
 
 	_, aLends := f.engines["a"].calls()
 	assert.Empty(t, aLends, "the lend must reach only the holder")
@@ -292,7 +321,7 @@ models:
 
 	w = postLend(s, lend)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.JSONEq(t, `{"id":"lend:1","gpu":"0a:00.0","mib":2048}`, w.Body.String())
+	assert.JSONEq(t, withRun(s, `{"id":"lend:{run:lend}:1","gpu":"0a:00.0","mib":2048}`), w.Body.String())
 	assert.Equal(t, map[string]process.ProcessState{"lend": process.StateReady}, s.local.RunningModels())
 
 	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/debug/vram", port))

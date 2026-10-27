@@ -107,10 +107,10 @@ func TestServer_VramReturnRouteReachesModel(t *testing.T) {
 	}
 	s := f.server(lendModels(map[string]bool{"a": true, "b": true}))
 
-	w := postReturn(s, `{"id":"b:7"}`)
+	w := postReturn(s, withRun(s, `{"id":"b:{run:b}:7"}`))
 
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.JSONEq(t, `{"id":"b:7","gpu":"0000:0a:00.0","mib":8192}`, w.Body.String())
+	assert.JSONEq(t, withRun(s, `{"id":"b:{run:b}:7","gpu":"0000:0a:00.0","mib":8192}`), w.Body.String())
 	assert.Empty(t, f.engines["a"].requests(), "the return must reach only the named model")
 	assert.Equal(t, []string{`/vram/return {"id":"7"}`}, f.engines["b"].requests())
 	assert.Zero(t, f.starts.Load(), "no /vram request may go through the load path")
@@ -125,10 +125,10 @@ func TestServer_VramReturnRouteNumericEngineID(t *testing.T) {
 	}
 	s := f.server(lendModels(map[string]bool{"a": true}))
 
-	w := postReturn(s, `{"id":"a:7"}`)
+	w := postReturn(s, withRun(s, `{"id":"a:{run:a}:7"}`))
 
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.JSONEq(t, `{"id":"a:7","gpu":"0000:0a:00.0","mib":8192}`, w.Body.String())
+	assert.JSONEq(t, withRun(s, `{"id":"a:{run:a}:7","gpu":"0000:0a:00.0","mib":8192}`), w.Body.String())
 	assert.Equal(t, []string{`/vram/return {"id":"7"}`}, f.engines["a"].requests())
 	assert.Zero(t, f.starts.Load(), "no /vram request may go through the load path")
 }
@@ -140,7 +140,7 @@ func TestServer_VramReturnRouteKeepsOtherFields(t *testing.T) {
 	}
 	s := f.server(lendModels(map[string]bool{"a": true}))
 
-	w := postReturn(s, `{"id":"a:7","note":"x"}`)
+	w := postReturn(s, withRun(s, `{"id":"a:{run:a}:7","note":"x"}`))
 
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	assert.Equal(t, []string{`/vram/return {"id":"7","note":"x"}`}, f.engines["a"].requests())
@@ -151,12 +151,17 @@ func TestServer_VramReturnRouteNotFound(t *testing.T) {
 	tests := []struct {
 		name, body string
 	}{
-		{"unknown model", `{"id":"c:7"}`},
-		{"model without vramLend", `{"id":"plain:7"}`},
-		{"model not ready", `{"id":"stopped:7"}`},
+		{"unknown model", `{"id":"c:{run:a}:7"}`},
+		{"model without vramLend", `{"id":"plain:{run:a}:7"}`},
+		{"model not ready", `{"id":"stopped:{run:stopped}:7"}`},
 		{"no prefix", `{"id":"7"}`},
 		{"number id", `{"id":7}`},
-		{"empty engine id", `{"id":"a:"}`},
+		{"no run token", `{"id":"a:7"}`},
+		{"empty run token", `{"id":"a::7"}`},
+		// a hex token can never be "zzzzzzzz", so this is never the current run
+		{"unknown run token", `{"id":"a:zzzzzzzz:7"}`},
+		{"empty engine id", `{"id":"a:{run:a}:"}`},
+		{"no engine id", `{"id":"a:{run:a}"}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -169,8 +174,10 @@ func TestServer_VramReturnRouteNotFound(t *testing.T) {
 				ready: map[string]bool{"a": true, "plain": true},
 			}
 			s := f.server(lendModels(map[string]bool{"a": true, "plain": false, "stopped": true}))
+			// a has a current run, so a 404 is never for want of one
+			require.NotEmpty(t, s.vramCards.Run("a"))
 
-			w := postReturn(s, tt.body)
+			w := postReturn(s, withRun(s, tt.body))
 
 			assert.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
 			for id, e := range f.engines {
@@ -207,7 +214,7 @@ func TestServer_VramReturnRouteEngineErrorPassesThrough(t *testing.T) {
 	}
 	s := f.server(lendModels(map[string]bool{"a": true}))
 
-	w := postReturn(s, `{"id":"a:7"}`)
+	w := postReturn(s, withRun(s, `{"id":"a:{run:a}:7"}`))
 
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 	assert.Equal(t, answer, w.Body.String())
@@ -239,7 +246,7 @@ models:
 	t.Cleanup(func() { s.Shutdown(5 * time.Second) })
 
 	// While the model is stopped a return answers 404 and starts nothing.
-	w := postReturn(s, `{"id":"lend:1"}`)
+	w := postReturn(s, `{"id":"lend:00000000:1"}`)
 	assert.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
 	assert.Never(t, func() bool { return len(s.local.RunningModels()) != 0 },
 		200*time.Millisecond, 10*time.Millisecond, "a return must not start the model")
@@ -252,11 +259,11 @@ models:
 
 	w = postLend(s, `{"gpu":"0a:00.0","mib":2048}`)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.JSONEq(t, `{"id":"lend:1","gpu":"0a:00.0","mib":2048}`, w.Body.String())
+	assert.JSONEq(t, withRun(s, `{"id":"lend:{run:lend}:1","gpu":"0a:00.0","mib":2048}`), w.Body.String())
 
-	w = postReturn(s, `{"id":"lend:1"}`)
+	w = postReturn(s, withRun(s, `{"id":"lend:{run:lend}:1"}`))
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.JSONEq(t, `{"id":"lend:1","gpu":"0a:00.0","mib":2048}`, w.Body.String())
+	assert.JSONEq(t, withRun(s, `{"id":"lend:{run:lend}:1","gpu":"0a:00.0","mib":2048}`), w.Body.String())
 	assert.Equal(t, map[string]process.ProcessState{"lend": process.StateReady}, s.local.RunningModels())
 
 	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/debug/vram", port))

@@ -20,8 +20,8 @@ type ModelGPUState struct {
 	Model string `json:"model"`
 }
 
-// ModelLease is one open lease, its id prefixed with the model id the same
-// way a lend answer's is.
+// ModelLease is one open lease, its id prefixed with the model id and run
+// token the same way a lend answer's is.
 type ModelLease struct {
 	Lease
 	Model string `json:"model"`
@@ -29,8 +29,9 @@ type ModelLease struct {
 
 // MergeStates merges the state of each lend model, keyed by model id, in
 // model id order and in each engine's own order within a model. Card
-// addresses are normalized. A model with a bad card address or lease id is
-// left out whole and passed to warn, which may be nil. The lists are never
+// addresses are normalized, and lease ids get the LeaseID of the model and
+// the state's Run. A model with a bad card address or lease id, or a state
+// with no Run, is left out whole and passed to warn, which may be nil. The lists are never
 // nil, so they encode as [] rather than null.
 func MergeStates(states map[string]State, warn func(modelID string, err error)) MergedState {
 	m := MergedState{GPUs: []ModelGPUState{}, Leases: []ModelLease{}}
@@ -60,6 +61,9 @@ func modelState(model string, st State) ([]ModelGPUState, []ModelLease, error) {
 		gpus = append(gpus, ModelGPUState{GPUState: g, Model: model})
 	}
 
+	if st.Run == "" {
+		return nil, nil, errors.New("/vram/state has no run token")
+	}
 	leases := make([]ModelLease, 0, len(st.Leases))
 	for _, l := range st.Leases {
 		if l.ID == "" {
@@ -69,7 +73,7 @@ func modelState(model string, st State) ([]ModelGPUState, []ModelLease, error) {
 		if err != nil {
 			return nil, nil, err
 		}
-		l.ID = model + ":" + l.ID
+		l.ID = LeaseID(model, st.Run, l.ID)
 		l.GPU = card
 		leases = append(leases, ModelLease{Lease: l, Model: model})
 	}
