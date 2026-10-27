@@ -12,7 +12,9 @@ func TestVramLendRoute_LendCard(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "0000:0a:00.0", card)
 
-	for _, body := range []string{``, `not json`, `[]`, `{"mib":2048}`, `{"gpu":7}`, `{"gpu":"gpu0"}`} {
+	for _, body := range []string{``, `not json`, `[]`, `{"mib":2048}`, `{"gpu":7}`, `{"gpu":"gpu0"}`,
+		`{"gpu":"0000:0a:00.0"}`, `{"gpu":"0000:0a:00.0","mib":0}`, `{"gpu":"0000:0a:00.0","mib":-1}`,
+		`{"gpu":"0000:0a:00.0","mib":1.5}`, `{"gpu":"0000:0a:00.0","mib":"2048"}`, `{"gpu":"0000:0a:00.0","mib":true}`} {
 		_, err := LendCard([]byte(body))
 		assert.Error(t, err, "body %q", body)
 	}

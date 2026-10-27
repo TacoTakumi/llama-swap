@@ -30,9 +30,14 @@ func MaxMiB(body []byte) int64 {
 }
 
 // LendCard returns the normalized card that a POST /vram/lend body asks for.
+// The body must also ask for a whole number of MiB above 0.
 func LendCard(body []byte) (string, error) {
 	if !gjson.ValidBytes(body) || !gjson.ParseBytes(body).IsObject() {
 		return "", errors.New("body is not a JSON object")
+	}
+	mib := gjson.GetBytes(body, "mib")
+	if n, err := strconv.ParseInt(mib.Raw, 10, 64); mib.Type != gjson.Number || err != nil || n <= 0 {
+		return "", errors.New("mib must be a whole number above 0")
 	}
 	gpu := gjson.GetBytes(body, "gpu")
 	if gpu.Type != gjson.String {

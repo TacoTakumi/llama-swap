@@ -71,6 +71,8 @@ func (e *lendEngine) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		json.Unmarshal(body, &req)
 		fmt.Fprintf(w, `{"id":"7","gpu":%q,"mib":%d}`, req.GPU, req.MiB)
+	case "/vram/return":
+		io.WriteString(w, `{"id":"7","gpu":"0000:0a:00.0","mib":2048}`)
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
