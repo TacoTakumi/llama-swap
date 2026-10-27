@@ -67,6 +67,68 @@ func (s *Server) handleVramLend(w http.ResponseWriter, r *http.Request) {
 	w.Write(out)
 }
 
+// handleVramReturn sends a return of "<model id>:<engine id>" to that lend
+// model with the engine id alone, and prefixes the id of a 200 answer again.
+// Like a lend it goes through ServeIfReady only. A return whose id names no
+// ready lend model answers 404, and no engine gets it.
+func (s *Server) handleVramReturn(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxVramBodyBytes))
+	if err != nil {
+		swaputil.SendResponse(w, r, http.StatusBadRequest, "vram: reading the request body: "+err.Error())
+		return
+	}
+	id, err := vramlend.ReturnID(body)
+	if err != nil {
+		swaputil.SendResponse(w, r, http.StatusBadRequest, "vram: "+err.Error())
+		return
+	}
+
+	var models []string
+	for mid, mc := range s.cfg.Models {
+		if mc.VramLend {
+			models = append(models, mid)
+		}
+	}
+	modelID, engineID, ok := vramlend.SplitLeaseID(id, models)
+	if !ok {
+		swaputil.SendResponse(w, r, http.StatusNotFound, "vram: no lend model has lease "+id)
+		return
+	}
+	fwdBody, err := vramlend.SetReturnID(body, engineID)
+	if err != nil {
+		swaputil.SendResponse(w, r, http.StatusBadRequest, "vram: "+err.Error())
+		return
+	}
+
+	fwd := r.Clone(r.Context())
+	fwd.Body = io.NopCloser(bytes.NewReader(fwdBody))
+	fwd.ContentLength = int64(len(fwdBody))
+	rec := httptest.NewRecorder()
+	if !s.local.ServeIfReady(modelID, rec, fwd) {
+		// A lease ends with the process that lent it.
+		swaputil.SendResponse(w, r, http.StatusNotFound, "vram: model "+modelID+" is not running")
+		return
+	}
+
+	out := rec.Body.Bytes()
+	if rec.Code == http.StatusOK {
+		// The engine has the memory back, so an answer without a usable id
+		// still goes out as the engine sent it.
+		if prefixed, err := vramlend.PrefixLeaseID(modelID, out); err == nil {
+			out = prefixed
+		} else {
+			s.logs.ProxyLogs.Warnf("<%s> vram: return answer: %v", modelID, err)
+		}
+	}
+
+	for k, v := range rec.Header() {
+		w.Header()[k] = v
+	}
+	w.Header().Set("Content-Length", strconv.Itoa(len(out)))
+	w.WriteHeader(rec.Code)
+	w.Write(out)
+}
+
 // sendNoLend answers a lend that no ready lend model can serve.
 func sendNoLend(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
