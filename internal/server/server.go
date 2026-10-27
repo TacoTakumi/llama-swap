@@ -24,6 +24,7 @@ import (
 	"github.com/mostlygeek/llama-swap/internal/store"
 	"github.com/mostlygeek/llama-swap/internal/swaputil"
 	"github.com/mostlygeek/llama-swap/internal/tailcat"
+	"github.com/mostlygeek/llama-swap/internal/vramlend"
 )
 
 // Server owns the HTTP mux, cross-cutting middleware, and the local/peer model
@@ -58,6 +59,11 @@ type Server struct {
 	// discovery. The event dispatcher is process-wide, so a hot config reload
 	// would otherwise leave the retired Server probing alongside the new one.
 	capcompatCancel context.CancelFunc
+
+	// vramCards keeps the card list of each model that lends VRAM, for
+	// routing a lend to the model that holds the card. The same process-state
+	// listener as discovery fills and drops it.
+	vramCards *vramlend.Cards
 
 	// tools is the MCP tool surface served at /api/mcp. Providers are
 	// aggregated here rather than enumerated in the handler, so a future
@@ -250,6 +256,7 @@ func New(cfg config.Config, logs *logmon.Group, perfMon *perf.Monitor, st store.
 		shutdownFn:    shutdownFn,
 	}
 	s.capcompat = capcompat.New(st.Cache(), logs.ProxyLogs)
+	s.vramCards = newVramCards(shutdownCtx, cfg, local, logs.ProxyLogs)
 	s.capcompatCancel = event.On(s.onProcessStateChange)
 
 	// SysProvider is constructed here because this is where perf and hardware
@@ -267,6 +274,23 @@ func New(cfg config.Config, logs *logmon.Group, perfMon *perf.Monitor, st store.
 	s.routes()
 	s.startPreload()
 	return s, nil
+}
+
+// newVramCards tracks the cards of the configured lend models. Its state
+// reads go through ServeIfReady, so they never start a model. It returns nil,
+// which holds no cards, when no model lends.
+func newVramCards(ctx context.Context, cfg config.Config, local router.LocalRouter, logger *logmon.Monitor) *vramlend.Cards {
+	var models []string
+	for id, mc := range cfg.Models {
+		if mc.VramLend {
+			models = append(models, id)
+		}
+	}
+	if len(models) == 0 {
+		return nil
+	}
+	slices.Sort(models)
+	return vramlend.NewCards(ctx, models, local.ServeIfReady, logger)
 }
 
 // localPeerHandler dispatches a model-routed request to the local or peer

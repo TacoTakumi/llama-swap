@@ -14,17 +14,27 @@ import (
 
 // onProcessStateChange refreshes a model's discovered capabilities when its
 // process becomes ready, which is the only moment the upstream can be asked.
+// For a model that lends VRAM it also reads the card list of the new process
+// run, and drops the list when the process leaves the ready state.
 //
 // This runs on the event dispatcher's consumer goroutine, and a consumer that
 // falls behind eventually blocks the publisher, which here is the process
-// state machine itself. So it must not do any work inline: the probe goes to
-// its own goroutine and this returns immediately.
+// state machine itself. So it must not do any work inline: the probe and the
+// card read go to their own goroutines and this returns immediately.
 func (s *Server) onProcessStateChange(e swaputil.ProcessStateChangeEvent) {
-	if e.NewState != string(process.StateReady) {
+	mc, ok := s.cfg.Models[e.ProcessName]
+	if !ok {
 		return
 	}
-	mc, ok := s.cfg.Models[e.ProcessName]
-	if !ok || mc.Capabilities.DisableAuto {
+	ready := e.NewState == string(process.StateReady)
+	if mc.VramLend {
+		if ready {
+			s.vramCards.Ready(e.ProcessName)
+		} else {
+			s.vramCards.Drop(e.ProcessName)
+		}
+	}
+	if !ready || mc.Capabilities.DisableAuto {
 		return
 	}
 	go s.refreshCapabilities(e.ProcessName, mc)

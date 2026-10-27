@@ -37,6 +37,7 @@ type stubRouter struct {
 	unloadModels  []string
 	unloadTimeout time.Duration
 	loggers       map[string]*logmon.Monitor
+	serveIfReady  func(string, http.ResponseWriter, *http.Request) bool
 }
 
 func newStubRouter(models []string, response string) *stubRouter {
@@ -80,7 +81,12 @@ func (s *stubRouter) ProcessLogger(modelID string) (*logmon.Monitor, bool) {
 	return nil, false
 }
 
-func (s *stubRouter) ServeIfReady(string, http.ResponseWriter, *http.Request) bool { return false }
+func (s *stubRouter) ServeIfReady(modelID string, w http.ResponseWriter, r *http.Request) bool {
+	if s.serveIfReady != nil {
+		return s.serveIfReady(modelID, w, r)
+	}
+	return false
+}
 
 // newTestServer wires a Server with stub routers and a built mux.
 func newTestServer(local router.LocalRouter, peer router.Router) *Server {
@@ -109,6 +115,7 @@ func newTestServerWithConfig(cfg config.Config, local router.LocalRouter, peer r
 		shutdownCtx: ctx,
 		shutdownFn:  cancel,
 	}
+	s.vramCards = newVramCards(ctx, cfg, local, proxylog)
 	s.routes()
 	return s
 }

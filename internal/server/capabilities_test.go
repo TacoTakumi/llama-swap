@@ -3,8 +3,12 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -529,4 +533,117 @@ func TestAPI_RefreshCapabilitiesSilentOnUnsupportedUpstream(t *testing.T) {
 		t.Fatal("an upstream with nothing to report should not announce a change")
 	case <-time.After(500 * time.Millisecond):
 	}
+}
+
+// vramEngine is a lend model behind a stub router: ServeIfReady answers its
+// /vram/state while it is ready, and the stub's ServeHTTP, the path that
+// loads models, counts every call.
+type vramEngine struct {
+	mu     sync.Mutex
+	ready  bool
+	gpus   []string
+	reads  atomic.Int32
+	starts atomic.Int32
+}
+
+func (e *vramEngine) set(ready bool, gpus ...string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.ready = ready
+	e.gpus = gpus
+}
+
+func (e *vramEngine) router() *stubRouter {
+	stub := newStubRouter([]string{"lend"}, "")
+	stub.serveHTTP = func(w http.ResponseWriter, r *http.Request) {
+		e.starts.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}
+	stub.serveIfReady = func(modelID string, w http.ResponseWriter, r *http.Request) bool {
+		e.mu.Lock()
+		ready, gpus := e.ready, e.gpus
+		e.mu.Unlock()
+		if modelID != "lend" || !ready || r.URL.Path != "/vram/state" {
+			return false
+		}
+		e.reads.Add(1)
+		var body strings.Builder
+		body.WriteString(`{"gpus":[`)
+		for i, g := range gpus {
+			if i > 0 {
+				body.WriteString(",")
+			}
+			fmt.Fprintf(&body, `{"gpu":%q,"lendable":1024,"lent":0}`, g)
+		}
+		body.WriteString(`],"leases":[]}`)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(body.String()))
+		return true
+	}
+	return stub
+}
+
+func vramServer(e *vramEngine) *Server {
+	cfg := config.Config{Models: map[string]config.ModelConfig{
+		"lend":  {Cmd: "llama-server -m a.gguf", Proxy: "http://127.0.0.1:1", VramLend: true},
+		"plain": {Cmd: "llama-server -m b.gguf", Proxy: "http://127.0.0.1:1"},
+	}}
+	return newTestServerWithConfig(cfg, e.router(), newStubRouter(nil, ""))
+}
+
+func sendState(s *Server, modelID string, state process.ProcessState) {
+	s.onProcessStateChange(swaputil.ProcessStateChangeEvent{ProcessName: modelID, NewState: string(state)})
+}
+
+func TestServer_VramCardsReadOnceOnReady(t *testing.T) {
+	e := &vramEngine{ready: true, gpus: []string{"00000000:0A:00.0"}}
+	s := vramServer(e)
+
+	sendState(s, "lend", process.StateReady)
+	require.Eventually(t, func() bool { return e.reads.Load() == 1 }, 5*time.Second, time.Millisecond)
+
+	for range 3 {
+		model, ok := s.vramCards.Holder(context.Background(), "0000:0a:00.0")
+		require.True(t, ok)
+		assert.Equal(t, "lend", model)
+	}
+	assert.Equal(t, int32(1), e.reads.Load(), "one state read for the process run")
+	assert.Zero(t, e.starts.Load(), "no /vram read may go through the load path")
+}
+
+func TestServer_VramCardsIgnoreModelsThatDoNotLend(t *testing.T) {
+	e := &vramEngine{ready: true, gpus: []string{"0000:0a:00.0"}}
+	s := vramServer(e)
+
+	sendState(s, "plain", process.StateReady)
+	assert.Never(t, func() bool { return e.reads.Load() != 0 }, 100*time.Millisecond, 10*time.Millisecond)
+	assert.Zero(t, e.starts.Load(), "no /vram read may go through the load path")
+}
+
+func TestServer_VramCardsFollowRestart(t *testing.T) {
+	e := &vramEngine{ready: true, gpus: []string{"0000:0a:00.0"}}
+	s := vramServer(e)
+	ctx := context.Background()
+
+	sendState(s, "lend", process.StateReady)
+	model, ok := s.vramCards.Holder(ctx, "0000:0a:00.0")
+	require.True(t, ok)
+	assert.Equal(t, "lend", model)
+
+	// The model stops: its list goes with the process run.
+	e.set(false)
+	sendState(s, "lend", process.StateStopping)
+	_, ok = s.vramCards.Holder(ctx, "0000:0a:00.0")
+	assert.False(t, ok, "a stopped model holds no card")
+
+	// It restarts on another card, and lends for that card route to it.
+	e.set(true, "0000:0b:00.0")
+	sendState(s, "lend", process.StateStarting)
+	sendState(s, "lend", process.StateReady)
+	model, ok = s.vramCards.Holder(ctx, "0000:0b:00.0")
+	require.True(t, ok)
+	assert.Equal(t, "lend", model)
+	_, ok = s.vramCards.Holder(ctx, "0000:0a:00.0")
+	assert.False(t, ok, "the old card belongs to the old process run")
+	assert.Zero(t, e.starts.Load(), "no /vram read may go through the load path")
 }
