@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -118,18 +120,18 @@ func assertNoStart(t *testing.T, f *fakeRouter) {
 	}
 }
 
-func requireHolder(t *testing.T, c *Cards, card, want string) {
+func requireHolders(t *testing.T, c *Cards, card string, want ...string) {
 	t.Helper()
-	got, ok := c.Holder(context.Background(), card)
-	if !ok || got != want {
-		t.Fatalf("Holder(%q)=%q,%v want %q,true", card, got, ok, want)
+	got := c.Holders(context.Background(), card)
+	if !slices.Equal(got, want) {
+		t.Fatalf("Holders(%q)=%q want %q", card, got, want)
 	}
 }
 
 func requireNoHolder(t *testing.T, c *Cards, card string) {
 	t.Helper()
-	if got, ok := c.Holder(context.Background(), card); ok {
-		t.Fatalf("Holder(%q)=%q want no holder", card, got)
+	if got := c.Holders(context.Background(), card); len(got) != 0 {
+		t.Fatalf("Holders(%q)=%q want no holder", card, got)
 	}
 }
 
@@ -152,7 +154,7 @@ func TestVramLend_CardsOneReadForThreeLookups(t *testing.T) {
 
 	c.Ready("lend")
 	for range 3 {
-		requireHolder(t, c, "0000:0a:00.0", "lend")
+		requireHolders(t, c, "0000:0a:00.0", "lend")
 	}
 	if got := e.reads.Load(); got != 1 {
 		t.Errorf("reads=%d want 1", got)
@@ -174,7 +176,7 @@ func TestVramLend_CardsReadInBackgroundOnReady(t *testing.T) {
 	time.Sleep(delay * 3 / 2)
 
 	start := time.Now()
-	requireHolder(t, c, "0000:0a:00.0", "lend")
+	requireHolders(t, c, "0000:0a:00.0", "lend")
 	if elapsed := time.Since(start); elapsed > delay/10 {
 		t.Errorf("lookup took %v, want under %v", elapsed, delay/10)
 	}
@@ -210,8 +212,8 @@ func TestVramLend_CardsLookupJoinsInFlightRead(t *testing.T) {
 			results := make(chan string, lookups)
 			for range lookups {
 				go func() {
-					got, _ := c.Holder(context.Background(), "0000:0a:00.0")
-					results <- got
+					got := c.Holders(context.Background(), "0000:0a:00.0")
+					results <- strings.Join(got, ",")
 				}()
 			}
 			waitReads(t, e, 1)
@@ -223,7 +225,7 @@ func TestVramLend_CardsLookupJoinsInFlightRead(t *testing.T) {
 				select {
 				case got := <-results:
 					if got != "lend" {
-						t.Errorf("Holder=%q want lend", got)
+						t.Errorf("Holders=%q want lend", got)
 					}
 				case <-time.After(5 * time.Second):
 					t.Fatal("lookup never answered")
@@ -243,7 +245,7 @@ func TestVramLend_CardsDroppedWhenModelLeavesReady(t *testing.T) {
 	c := newTestCards(t, f, time.Second, "lend")
 
 	c.Ready("lend")
-	requireHolder(t, c, "0000:0a:00.0", "lend")
+	requireHolders(t, c, "0000:0a:00.0", "lend")
 
 	// The model stops. The list goes with the process run.
 	e.set(false)
@@ -253,7 +255,7 @@ func TestVramLend_CardsDroppedWhenModelLeavesReady(t *testing.T) {
 	// It comes back on a different card.
 	e.set(true, "0000:0b:00.0")
 	c.Ready("lend")
-	requireHolder(t, c, "0000:0b:00.0", "lend")
+	requireHolders(t, c, "0000:0b:00.0", "lend")
 	requireNoHolder(t, c, "0000:0a:00.0")
 	assertNoStart(t, f)
 }
@@ -267,15 +269,37 @@ func TestVramLend_CardsRoutesToModelHoldingCard(t *testing.T) {
 
 	c.Ready("a")
 	c.Ready("b")
-	requireHolder(t, c, "0000:01:00.0", "a")
+	requireHolders(t, c, "0000:01:00.0", "a")
 	// the engine's nvidia-smi form is normalized before matching
-	requireHolder(t, c, "0000:0a:00.0", "b")
-	requireHolder(t, c, "0000:0b:00.0", "b")
+	requireHolders(t, c, "0000:0a:00.0", "b")
+	requireHolders(t, c, "0000:0b:00.0", "b")
 	requireNoHolder(t, c, "0000:0c:00.0")
 	requireNoHolder(t, c, "0000:0d:00.0")
 	if got := stopped.reads.Load(); got != 0 {
 		t.Errorf("stopped reads=%d want 0", got)
 	}
+	assertNoStart(t, f)
+}
+
+func TestVramLendOrder_CardsHoldersInModelOrder(t *testing.T) {
+	// Every holder of the card comes back, in the order the models were
+	// given, even when a later model's list is in first.
+	gate := make(chan struct{})
+	a := &fakeEngine{ready: true, gpus: []string{"0000:0a:00.0"}, gate: gate}
+	b := &fakeEngine{ready: true, gpus: []string{"0000:01:00.0"}}
+	c3 := &fakeEngine{ready: true, gpus: []string{"0000:0a:00.0", "0000:0b:00.0"}}
+	stopped := &fakeEngine{gpus: []string{"0000:0a:00.0"}}
+	f := newFakeRouter(map[string]*fakeEngine{"a": a, "b": b, "c": c3, "stopped": stopped})
+	c := newTestCards(t, f, 5*time.Second, "a", "b", "c", "stopped")
+
+	c.Ready("b")
+	c.Ready("c")
+	waitReads(t, c3, 1)
+	time.AfterFunc(50*time.Millisecond, func() { close(gate) })
+
+	requireHolders(t, c, "0000:0a:00.0", "a", "c")
+	requireHolders(t, c, "0000:0b:00.0", "c")
+	requireHolders(t, c, "0000:01:00.0", "b")
 	assertNoStart(t, f)
 }
 
@@ -310,7 +334,7 @@ func TestVramLend_CardsReadTimeout(t *testing.T) {
 	e.mu.Lock()
 	e.delay, e.ignoreCtx = 0, false
 	e.mu.Unlock()
-	requireHolder(t, c, "0000:0a:00.0", "lend")
+	requireHolders(t, c, "0000:0a:00.0", "lend")
 	if got := e.reads.Load(); got != 2 {
 		t.Errorf("reads=%d want 2", got)
 	}
@@ -326,8 +350,8 @@ func TestVramLend_CardsLookupHonorsContext(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	if got, ok := c.Holder(ctx, "0000:0a:00.0"); ok {
-		t.Fatalf("Holder=%q want no holder after the caller gave up", got)
+	if got := c.Holders(ctx, "0000:0a:00.0"); len(got) != 0 {
+		t.Fatalf("Holders=%q want no holder after the caller gave up", got)
 	}
 	assertNoStart(t, f)
 }
@@ -403,7 +427,7 @@ func TestVramLend_CardsNilIsSafe(t *testing.T) {
 	var c *Cards
 	c.Ready("lend")
 	c.Drop("lend")
-	if _, ok := c.Holder(context.Background(), "0000:0a:00.0"); ok {
+	if got := c.Holders(context.Background(), "0000:0a:00.0"); len(got) != 0 {
 		t.Error("nil Cards found a holder")
 	}
 	if got := c.ReadAll(context.Background()); len(got) != 0 {

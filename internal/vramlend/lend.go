@@ -3,6 +3,7 @@ package vramlend
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -11,6 +12,22 @@ import (
 
 // NoLendBody is the 409 answer to a lend that no ready lend model can serve.
 const NoLendBody = `{"max_mib":0}`
+
+// NoLendAnswer returns the 409 answer to a lend that every asked model
+// refused, with the largest max_mib among their answers.
+func NoLendAnswer(maxMiB int64) []byte {
+	return []byte(`{"max_mib":` + strconv.FormatInt(maxMiB, 10) + `}`)
+}
+
+// MaxMiB returns the max_mib of an engine's 409 lend answer. A body without
+// a readable, non-negative max_mib counts as 0.
+func MaxMiB(body []byte) int64 {
+	res := gjson.GetBytes(body, "max_mib")
+	if res.Type != gjson.Number || !gjson.ValidBytes(body) {
+		return 0
+	}
+	return max(res.Int(), 0)
+}
 
 // LendCard returns the normalized card that a POST /vram/lend body asks for.
 func LendCard(body []byte) (string, error) {

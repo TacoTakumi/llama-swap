@@ -39,3 +39,28 @@ func TestVramLendRoute_PrefixLeaseID(t *testing.T) {
 		assert.Error(t, err, "body %q", body)
 	}
 }
+
+func TestVramLendOrder_MaxMiB(t *testing.T) {
+	tests := []struct {
+		body string
+		want int64
+	}{
+		{`{"max_mib":300}`, 300},
+		{`{"max_mib":0}`, 0},
+		{`{"max_mib":100,"error":"busy"}`, 100},
+		// a body without a readable max_mib counts as 0
+		{`{"error":"busy"}`, 0},
+		{`{"max_mib":"300"}`, 0},
+		{`{"max_mib":-5}`, 0},
+		{`not json`, 0},
+		{``, 0},
+	}
+	for _, tt := range tests {
+		assert.Equal(t, tt.want, MaxMiB([]byte(tt.body)), "body %q", tt.body)
+	}
+}
+
+func TestVramLendOrder_NoLendAnswer(t *testing.T) {
+	assert.JSONEq(t, NoLendBody, string(NoLendAnswer(0)))
+	assert.JSONEq(t, `{"max_mib":300}`, string(NoLendAnswer(300)))
+}

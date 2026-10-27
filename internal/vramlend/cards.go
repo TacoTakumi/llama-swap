@@ -42,8 +42,8 @@ type Lease struct {
 
 var errNotReady = errors.New("model is not ready")
 
-// Cards keeps the cards each lend model uses, for routing a lend to the model
-// that holds the card. A list belongs to one process run: it is read when the
+// Cards keeps the cards each lend model uses, for routing a lend to the models
+// that hold the card. A list belongs to one process run: it is read when the
 // model becomes ready and dropped when it leaves the ready state, so a model
 // that restarts on other cards routes by its new list.
 //
@@ -70,7 +70,7 @@ type cardRun struct {
 }
 
 // NewCards tracks the cards of models, the config keys of the models that
-// lend VRAM. Lookups match them in the order given. Reads end when ctx does.
+// lend VRAM. Lookups return them in the order given. Reads end when ctx does.
 func NewCards(ctx context.Context, models []string, serve ServeFunc, logger *logmon.Monitor) *Cards {
 	return &Cards{
 		Timeout: DefaultStateTimeout,
@@ -105,15 +105,16 @@ func (c *Cards) Drop(modelID string) {
 	delete(c.runs, modelID)
 }
 
-// Holder returns the lend model that uses card, a normalized PCI address.
+// Holders returns every lend model that uses card, a normalized PCI address,
+// in the order the models were given to NewCards.
 //
 // A model with no list yet is read on demand, and a lookup that finds a read
 // in flight waits for it rather than starting another. A model that is not
 // ready answers no list at once, and a read is never waited on past Timeout.
-// Holder returns false when no model holds card or ctx ends first.
-func (c *Cards) Holder(ctx context.Context, card string) (string, bool) {
+// Holders returns nil when no model holds card or ctx ends first.
+func (c *Cards) Holders(ctx context.Context, card string) []string {
 	if c == nil {
-		return "", false
+		return nil
 	}
 
 	c.mu.Lock()
@@ -127,29 +128,18 @@ func (c *Cards) Holder(ctx context.Context, card string) (string, bool) {
 	}
 	c.mu.Unlock()
 
-	// A list that is already in answers without waiting on a slower read of
-	// another model.
-	for i, r := range runs {
-		select {
-		case <-r.done:
-			if slices.Contains(r.cards, card) {
-				return c.models[i], true
-			}
-		default:
-		}
-	}
-
+	var holders []string
 	for i, r := range runs {
 		select {
 		case <-r.done:
 		case <-ctx.Done():
-			return "", false
+			return nil
 		}
 		if slices.Contains(r.cards, card) {
-			return c.models[i], true
+			holders = append(holders, c.models[i])
 		}
 	}
-	return "", false
+	return holders
 }
 
 // ReadAll reads the state of every lend model in parallel, each bounded by
