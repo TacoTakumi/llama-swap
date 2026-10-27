@@ -57,4 +57,11 @@ type LocalRouter interface {
 	// modelID must be a real (non-alias) config key. Returns false when the
 	// model is not known to this router.
 	ProcessLogger(modelID string) (*logmon.Monitor, bool)
+
+	// ServeIfReady forwards req to the named model's process only when it is
+	// ready. It never starts, queues or swaps a model and ignores the
+	// concurrency limit. modelID must be a real (non-alias) config key.
+	// Returns false, without writing to w, when the model is unknown or not
+	// ready.
+	ServeIfReady(modelID string, w http.ResponseWriter, req *http.Request) bool
 }

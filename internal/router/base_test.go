@@ -474,6 +474,148 @@ func TestBaseRouter_IgnoreWebsocketsDoesNotBlockSwap(t *testing.T) {
 	waitSignal(t, websocketDone, "websocket request finish")
 }
 
+func newVramRequest() *http.Request {
+	r := httptest.NewRequest(http.MethodPost, "/vram/lend", strings.NewReader(`{"gpu":"0","mib":1024}`))
+	r.Header.Set("Content-Type", "application/json")
+	return r
+}
+
+// assertNoSchedulerEvent fails if the run loop absorbed any request, which
+// would mean the call went through the scheduler.
+func assertNoSchedulerEvent(t *testing.T, b *baseRouter) {
+	t.Helper()
+	select {
+	case <-b.testProcessed:
+		t.Fatal("request reached the scheduler")
+	default:
+	}
+}
+
+func TestBaseRouter_VramServeIfReadyNeverStartsModel(t *testing.T) {
+	for _, state := range []process.ProcessState{process.StateStopped, process.StateStarting, process.StateStopping} {
+		t.Run(string(state), func(t *testing.T) {
+			a := newFakeProcess("a")
+			a.autoReady = true
+			if state != process.StateStopped {
+				a.setState(state)
+			}
+			b := newTestBase(t, map[string]process.Process{"a": a}, &stubPlanner{})
+
+			w := httptest.NewRecorder()
+			if b.ServeIfReady("a", w, newVramRequest()) {
+				t.Fatalf("ServeIfReady=true for a %s model", state)
+			}
+			if got := a.runCalls.Load(); got != 0 {
+				t.Errorf("runCalls=%d want 0", got)
+			}
+			if got := a.serveCalls.Load(); got != 0 {
+				t.Errorf("serveCalls=%d want 0", got)
+			}
+			if w.Body.Len() != 0 {
+				t.Errorf("body=%q want nothing written", w.Body.String())
+			}
+			assertNoSchedulerEvent(t, b)
+		})
+	}
+}
+
+func TestBaseRouter_VramServeIfReadyUnknownModel(t *testing.T) {
+	a := newFakeProcess("a")
+	a.markReady()
+	b := newTestBase(t, map[string]process.Process{"a": a}, &stubPlanner{})
+
+	if b.ServeIfReady("missing", httptest.NewRecorder(), newVramRequest()) {
+		t.Fatal("ServeIfReady=true for an unknown model")
+	}
+	if got := a.serveCalls.Load(); got != 0 {
+		t.Errorf("serveCalls=%d want 0", got)
+	}
+}
+
+func TestBaseRouter_VramServeIfReadyForwardsToReadyModel(t *testing.T) {
+	a := newFakeProcess("a")
+	a.markReady()
+	b := newTestBase(t, map[string]process.Process{"a": a}, &stubPlanner{})
+
+	w := httptest.NewRecorder()
+	if !b.ServeIfReady("a", w, newVramRequest()) {
+		t.Fatal("ServeIfReady=false for a ready model")
+	}
+	if w.Code != http.StatusOK || w.Body.String() != "ok:a" {
+		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+	}
+	if got := a.runCalls.Load(); got != 0 {
+		t.Errorf("runCalls=%d want 0", got)
+	}
+	if got := a.serveCalls.Load(); got != 1 {
+		t.Errorf("serveCalls=%d want 1", got)
+	}
+	assertNoSchedulerEvent(t, b)
+}
+
+// holdProcess holds only the requests made through the router's ServeHTTP, so
+// a test can keep the concurrency limit full while other requests pass.
+type holdProcess struct {
+	*fakeProcess
+	hold    chan struct{}
+	started chan struct{}
+}
+
+func (h *holdProcess) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/vram/lend" {
+		close(h.started)
+		<-h.hold
+	}
+	h.fakeProcess.ServeHTTP(w, r)
+}
+
+func TestBaseRouter_VramServeIfReadyBypassesConcurrencyLimit(t *testing.T) {
+	conf := config.Config{
+		HealthCheckTimeout: 5,
+		Models:             map[string]config.ModelConfig{"a": {ConcurrencyLimit: 1}},
+	}
+	a := newFakeProcess("a")
+	a.autoReady = true
+	h := &holdProcess{fakeProcess: a, hold: make(chan struct{}), started: make(chan struct{})}
+	b := newTestBaseWithConfig(t, conf, map[string]process.Process{"a": h}, &stubPlanner{})
+
+	longDone := make(chan struct{})
+	go func() {
+		defer close(longDone)
+		b.ServeHTTP(httptest.NewRecorder(), newRequest("a"))
+	}()
+	waitSignal(t, h.started, "long request start")
+
+	full := httptest.NewRecorder()
+	b.ServeHTTP(full, newRequest("a"))
+	if full.Code != http.StatusTooManyRequests {
+		t.Fatalf("limit not full: status=%d body=%q", full.Code, full.Body.String())
+	}
+	waitProcessed(t, b.testProcessed, 3)
+
+	done := make(chan bool, 1)
+	w := httptest.NewRecorder()
+	go func() { done <- b.ServeIfReady("a", w, newVramRequest()) }()
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatal("ServeIfReady=false for a ready model")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ServeIfReady waited on the concurrency limit")
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+	}
+	if got := a.runCalls.Load(); got != 1 {
+		t.Errorf("runCalls=%d want 1 (the long request's start only)", got)
+	}
+	assertNoSchedulerEvent(t, b)
+
+	close(h.hold)
+	waitSignal(t, longDone, "long request finish")
+}
+
 // TestBaseRouter_RequestDuringStop is the router-level regression test for
 // issue #946. A process being stopped outside the router's knowledge (a TTL
 // unload, a crash, an operator kill) must not wedge the swap machinery: the

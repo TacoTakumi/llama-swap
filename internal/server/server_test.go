@@ -80,6 +80,8 @@ func (s *stubRouter) ProcessLogger(modelID string) (*logmon.Monitor, bool) {
 	return nil, false
 }
 
+func (s *stubRouter) ServeIfReady(string, http.ResponseWriter, *http.Request) bool { return false }
+
 // newTestServer wires a Server with stub routers and a built mux.
 func newTestServer(local router.LocalRouter, peer router.Router) *Server {
 	return newTestServerWithConfig(config.Config{}, local, peer)

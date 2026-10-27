@@ -360,6 +360,20 @@ func (b *baseRouter) ProcessLogger(modelID string) (*logmon.Monitor, bool) {
 	return nil, false
 }
 
+// ServeIfReady forwards req straight to the process's own ServeHTTP when the
+// model is ready, the same way ignored websockets are served: it bypasses the
+// scheduler, so it never starts, queues or swaps a model and does not count
+// against the concurrency limit. A process may stop right after the readiness
+// check; the process then answers the request itself.
+func (b *baseRouter) ServeIfReady(modelID string, w http.ResponseWriter, req *http.Request) bool {
+	p, ok := b.processes[modelID]
+	if !ok || p.State() != process.StateReady {
+		return false
+	}
+	p.ServeHTTP(w, req)
+	return true
+}
+
 // RunningModels returns the current state of every process that is not stopped
 // or shut down. The processes map keys are fixed at construction and State()
 // is a snapshot, so this is safe to call without the run loop.
