@@ -8,6 +8,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -28,10 +31,25 @@ func main() {
 
 	ignoreSigTerm := flag.Bool("ignore-sig-term", false, "ignore SIGTERM signal")
 
+	// VRAM Lend: the cards /vram/state lists, and an optional fixed answer per route
+	vramGPUs := flag.String("vram-gpus", "", "comma separated PCI addresses /vram/state lists")
+	vramLendable := flag.Int("vram-lendable", 0, "lendable MiB /vram/state shows for each card")
+	var vram vramConfig
+	for name, rc := range map[string]*vramRouteConfig{"state": &vram.State, "lend": &vram.Lend, "return": &vram.Return} {
+		flag.IntVar(&rc.Status, "vram-"+name+"-status", 0, "fixed status for /vram/"+name+", 0 for the normal answer")
+		flag.StringVar(&rc.Body, "vram-"+name+"-body", "", "fixed JSON body for /vram/"+name)
+		flag.DurationVar(&rc.Delay, "vram-"+name+"-delay", 0, "wait before /vram/"+name+" answers")
+	}
+
 	flag.Parse() // Parse the command-line flags
+
+	vram.GPUs = parseVramGPUs(*vramGPUs)
+	vram.Lendable = *vramLendable
 
 	// Create a new Gin router
 	r := gin.New()
+
+	newVramResponder(vram).register(r)
 
 	// Set up the handler function using the provided response message
 	r.POST("/v1/chat/completions", func(c *gin.Context) {
@@ -371,4 +389,165 @@ runloop:
 	}
 
 	log.Println("simple-responder shutting down")
+}
+
+// vramRouteConfig replaces the normal answer of one /vram route. A Status
+// of 0 and an empty Body keep the normal answer. Delay applies either way.
+type vramRouteConfig struct {
+	Status int
+	Body   string
+	Delay  time.Duration
+}
+
+// vramConfig sets up the fake VRAM Lend engine: the cards it lists, the
+// lendable MiB of each card and an optional fixed answer per route.
+type vramConfig struct {
+	GPUs     []string
+	Lendable int
+	State    vramRouteConfig
+	Lend     vramRouteConfig
+	Return   vramRouteConfig
+}
+
+type vramLease struct {
+	ID  string `json:"id"`
+	GPU string `json:"gpu"`
+	MiB int64  `json:"mib"`
+}
+
+// vramRouteStats is what GET /debug/vram reports for each route
+type vramRouteStats struct {
+	Count    int    `json:"count"`
+	LastBody string `json:"last_body"`
+}
+
+// vramResponder answers /vram/state, /vram/lend and /vram/return in the
+// shapes of the VRAM Lend API, keeps the leases it hands out and counts
+// the requests each route got.
+type vramResponder struct {
+	cfg vramConfig
+
+	mu     sync.Mutex
+	nextID int
+	leases []vramLease
+	stats  map[string]vramRouteStats
+}
+
+func parseVramGPUs(s string) []string {
+	gpus := []string{}
+	for _, g := range strings.Split(s, ",") {
+		if g = strings.TrimSpace(g); g != "" {
+			gpus = append(gpus, g)
+		}
+	}
+	return gpus
+}
+
+func newVramResponder(cfg vramConfig) *vramResponder {
+	if cfg.GPUs == nil {
+		cfg.GPUs = []string{}
+	}
+	return &vramResponder{cfg: cfg, stats: map[string]vramRouteStats{
+		"state": {}, "lend": {}, "return": {},
+	}}
+}
+
+func (v *vramResponder) register(r *gin.Engine) {
+	r.GET("/vram/state", v.handle("state", v.cfg.State, v.state))
+	r.POST("/vram/lend", v.handle("lend", v.cfg.Lend, v.lend))
+	r.POST("/vram/return", v.handle("return", v.cfg.Return, v.release))
+	r.GET("/debug/vram", func(c *gin.Context) {
+		v.mu.Lock()
+		defer v.mu.Unlock()
+		c.JSON(http.StatusOK, v.stats)
+	})
+}
+
+// handle counts the request, waits the configured delay, then sends the
+// configured answer or the normal one.
+func (v *vramResponder) handle(name string, rc vramRouteConfig, normal func(*gin.Context, []byte)) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		body, _ := io.ReadAll(c.Request.Body)
+
+		v.mu.Lock()
+		v.stats[name] = vramRouteStats{Count: v.stats[name].Count + 1, LastBody: string(body)}
+		v.mu.Unlock()
+
+		if rc.Delay > 0 {
+			select {
+			case <-time.After(rc.Delay):
+			case <-c.Request.Context().Done():
+				return
+			}
+		}
+
+		if rc.Status == 0 && rc.Body == "" {
+			normal(c, body)
+			return
+		}
+
+		status := rc.Status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		if rc.Body == "" {
+			c.JSON(status, gin.H{"error": http.StatusText(status)})
+			return
+		}
+		c.Data(status, "application/json", []byte(rc.Body))
+	}
+}
+
+func (v *vramResponder) state(c *gin.Context, _ []byte) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	gpus := make([]gin.H, 0, len(v.cfg.GPUs))
+	for _, g := range v.cfg.GPUs {
+		var lent int64
+		for _, l := range v.leases {
+			if l.GPU == g {
+				lent += l.MiB
+			}
+		}
+		gpus = append(gpus, gin.H{"gpu": g, "lendable": v.cfg.Lendable, "lent": lent})
+	}
+	c.JSON(http.StatusOK, gin.H{"gpus": gpus, "leases": append([]vramLease{}, v.leases...)})
+}
+
+func (v *vramResponder) lend(c *gin.Context, body []byte) {
+	if !gjson.ValidBytes(body) || !gjson.ParseBytes(body).IsObject() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "body is not a JSON object"})
+		return
+	}
+
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.nextID++
+	lease := vramLease{
+		ID:  strconv.Itoa(v.nextID),
+		GPU: gjson.GetBytes(body, "gpu").String(),
+		MiB: gjson.GetBytes(body, "mib").Int(),
+	}
+	v.leases = append(v.leases, lease)
+	c.JSON(http.StatusOK, lease)
+}
+
+func (v *vramResponder) release(c *gin.Context, body []byte) {
+	if !gjson.ValidBytes(body) || !gjson.ParseBytes(body).IsObject() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "body is not a JSON object"})
+		return
+	}
+
+	id := gjson.GetBytes(body, "id").String()
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	for i, l := range v.leases {
+		if l.ID == id {
+			v.leases = append(v.leases[:i], v.leases[i+1:]...)
+			c.JSON(http.StatusOK, l)
+			return
+		}
+	}
+	c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("no open lease %q", id)})
 }
