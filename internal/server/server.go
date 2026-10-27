@@ -442,6 +442,10 @@ func (s *Server) routes() {
 	// 405 with Allow, rather than the mux's bare 404.
 	mux.Handle("/api/mcp", apiChain.ThenFunc(s.handleAPIMCP))
 
+	// VRAM Lend. Each route goes only to models with vramLend set, and only
+	// while they are ready: a /vram request never starts a model.
+	mux.Handle("POST /vram/lend", apiChain.ThenFunc(s.handleVramLend))
+
 	s.mux = mux
 	s.handler = chain.New(CreateRequestLogMiddleware(s.logs.HttpLogs), CreateCORSMiddleware(s.cfg)).Then(mux)
 }
