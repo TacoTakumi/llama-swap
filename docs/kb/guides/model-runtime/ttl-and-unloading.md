@@ -39,11 +39,12 @@ So `globalTTL: 600` with no per-model `ttl` unloads every model after 10
 minutes idle. A model that should stay resident sets `ttl: 0` to opt out.
 
 The timer measures **inactivity**, not lifetime — it resets on every request.
-Two kinds of request do not reset it: a websocket on a model with
-`compat.ignoreWebsockets`, and a request through `/upstream/<model>/` whose
-path matches `upstream.ignorePaths` (see
-`guides/connectivity/upstream-passthrough`). A client that polls any other
-path keeps the model loaded.
+Three kinds of request do not reset it: a websocket on a model with
+`compat.ignoreWebsockets`, a request through `/upstream/<model>/` whose path
+matches `upstream.ignorePaths` (see
+`guides/connectivity/upstream-passthrough`), and a `GET` to one of the
+`/comfyui/` endpoint's ignored paths (see `guides/upstreams/comfyui`). A
+client that polls any other path keeps the model loaded.
 
 ## `unloadTimeout` is a different thing
 

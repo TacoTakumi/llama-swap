@@ -26,13 +26,21 @@ out of it:
 | model state | result |
 | --- | --- |
 | not loaded (stopped, starting, stopping) | `409 Conflict`, `path matches upstream.ignorePaths`; nothing starts |
-| loaded | forwarded straight to the process: no concurrency slot, not counted in flight, no `ttl` reset |
+| loaded | forwarded straight to the process: no concurrency slot, no process in-flight count, no `ttl` reset |
 
 So a client that polls an ignored path (a UI tab, a metrics scraper, a health
 probe, a control call the engine must answer itself) cannot keep the model
 loaded past its `ttl`, and is not refused with a `429` while the model's
 `concurrencyLimit` is in use. Every other path through `/upstream/` is an
 ordinary request: it starts the model and counts as activity.
+
+The table is for local models. A peer model (one another llama-swap serves)
+is never started by a passthrough request, so a matched path on a peer is
+forwarded to the peer unchanged: no `409`, no exemption.
+
+The UI's in-flight list and the metrics middleware run before the match, so
+a matched path that is also a metered endpoint (`/v1/chat/completions`,
+`/props`) still shows there. The model's lifecycle does not count it.
 
 `ignorePaths` matches every method. A `POST` to a matched path is ignored the
 same way as a `GET`.

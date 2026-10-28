@@ -87,9 +87,10 @@ type ignoredPathKey struct{}
 // when the model was not ready, so the mark only ever reaches a ready model.
 //
 // A marked request is served the way an ignored websocket is: it stays outside
-// the scheduler, takes no concurrency slot, is not counted in flight, and does
-// not reset the model's idle TTL. Without the mark a client that polls an
-// ignored path (a UI tab, a scraper, a probe) keeps the model loaded forever.
+// the scheduler, takes no concurrency slot, is not counted in the process's
+// in-flight count, and does not reset the model's idle TTL. Without the mark a
+// client that polls an ignored path (a UI tab, a scraper, a probe) keeps the
+// model loaded forever.
 func WithIgnoredPath(r *http.Request) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), ignoredPathKey{}, true))
 }

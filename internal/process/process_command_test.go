@@ -941,3 +941,54 @@ func TestProcessCommand_TTL_IgnoresIgnoredPath(t *testing.T) {
 		t.Fatal("Run() did not return after TTL stop")
 	}
 }
+
+// TestProcessCommand_IgnoredPathKeepsLastUse pins the other half of the
+// ignored-path exemption: a marked request leaves the last-use time alone,
+// while an ordinary request moves it.
+func TestProcessCommand_IgnoredPathKeepsLastUse(t *testing.T) {
+	skipIfNoSimpleResponder(t)
+
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(mock.Close)
+
+	cmd, _ := simpleResponderCmd(t, "-silent")
+	p := newProcessCommand(t, config.ModelConfig{
+		Cmd:                cmd,
+		Proxy:              mock.URL,
+		CheckEndpoint:      "/health",
+		HealthCheckTimeout: 10,
+		UnloadTimeout:      1,
+	})
+	runErr := runAsync(t, p)
+
+	before := p.lastUse.Load()
+	time.Sleep(10 * time.Millisecond)
+	w := httptest.NewRecorder()
+	p.ServeHTTP(w, swaputil.WithIgnoredPath(httptest.NewRequest(http.MethodGet, "/api/jobs", nil)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("ignored path request status=%d want 200", w.Code)
+	}
+	if got := p.lastUse.Load(); got != before {
+		t.Fatalf("lastUse moved from %d to %d on an ignored path request", before, got)
+	}
+
+	w = httptest.NewRecorder()
+	p.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/jobs", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("ordinary request status=%d want 200", w.Code)
+	}
+	if got := p.lastUse.Load(); got <= before {
+		t.Fatalf("lastUse stayed at %d after an ordinary request", before)
+	}
+
+	if err := p.Stop(testStopTimeout); err != nil {
+		t.Fatalf("Stop() error: %v", err)
+	}
+	select {
+	case <-runErr:
+	case <-time.After(testReturnTimeout):
+		t.Fatal("Run() did not return after Stop")
+	}
+}

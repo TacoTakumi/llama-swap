@@ -87,7 +87,7 @@ The second rule is what `ignoreWebsockets` does everywhere, not something
 The endpoint's own rule matches on the path alone, so it also covers a plain
 `GET` to `/ws` that carries no upgrade headers. While the model is loaded, an
 ignored `GET` is kept out of the scheduler the same way: it takes no
-concurrency slot, is not counted in flight, and does not reset the `ttl`, so
+concurrency slot, no process in-flight count, and does not reset the `ttl`, so
 an open tab's job polling does not keep `comfyui_auto` resident.
 
 The ignored paths are fixed. They are the same set you would configure by hand
