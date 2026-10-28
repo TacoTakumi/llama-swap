@@ -869,7 +869,7 @@
                     "default": [
                         ".*\\.(js|json|css|png|gif|jpg|jpeg|ico|txt)$"
                     ],
-                    "description": "List of RE2 compatible regular expressions. Any request to a path matching any of the regular expressions will be ignored and not trigger a swap. When not specified, defaults to a pattern matching common static-asset suffixes (.js, .json, .css, .png, .gif, .jpg, .jpeg, .ico, .txt)."
+                    "description": "List of RE2 compatible regular expressions. Any request to a path matching any of the regular expressions will be ignored and not trigger a swap: it is answered with a 409 while the model is not loaded, and served outside the scheduler (no concurrency slot, not counted in flight, no ttl reset) while it is, like an ignored websocket. When not specified, defaults to a pattern matching common static-asset suffixes (.js, .json, .css, .png, .gif, .jpg, .jpeg, .ico, .txt)."
                 }
             },
             "additionalProperties": false,

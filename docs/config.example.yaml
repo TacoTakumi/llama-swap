@@ -282,6 +282,12 @@ upstream:
   # - default: (see below)
   # - any request to a path matching any of the regular expressions
   #   will be ignored and not trigger a swap
+  # - an ignored request neither starts the model nor counts as model
+  #   activity: while the model is not loaded it is answered with a 409,
+  #   and while the model is loaded it is served outside the scheduler
+  #   (no concurrency slot, not counted in flight, no ttl reset), the same
+  #   way an ignored websocket is. A client that polls an ignored path
+  #   cannot keep the model loaded.
   ignorePaths:
     - '.*\.(js|json|css|png|gif|jpg|jpeg|ico|txt)$'
 

@@ -4,7 +4,7 @@ summary: How ttl, globalTTL, unloadTimeout and Docker cmdStop interact, plus how
 category: guides
 tags: [ttl, unload, vram, memory, idle, docker, container, cmd-stop]
 config_keys: [globalTTL, unloadTimeout, models.*.ttl, models.*.unloadTimeout, models.*.cmdStop]
-updated: 2026-08-25
+updated: 2026-10-28
 ---
 
 # Automatic model unloading with ttl
@@ -39,6 +39,11 @@ So `globalTTL: 600` with no per-model `ttl` unloads every model after 10
 minutes idle. A model that should stay resident sets `ttl: 0` to opt out.
 
 The timer measures **inactivity**, not lifetime — it resets on every request.
+Two kinds of request do not reset it: a websocket on a model with
+`compat.ignoreWebsockets`, and a request through `/upstream/<model>/` whose
+path matches `upstream.ignorePaths` (see
+`guides/connectivity/upstream-passthrough`). A client that polls any other
+path keeps the model loaded.
 
 ## `unloadTimeout` is a different thing
 

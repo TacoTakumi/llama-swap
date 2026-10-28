@@ -4,7 +4,7 @@ summary: Name a model comfyui_auto and use /comfyui/ so ComfyUI's websocket does
 category: guides
 tags: [comfyui, image, websocket, upstream, swapping, ttl, docker]
 config_keys: [models.*.compat.ignoreWebsockets, models.*.concurrencyLimit, models.*.checkEndpoint, models.*.cmdStop, models.*.unloadTimeout, models.*.ttl, models.*.unlisted, upstream.ignorePaths]
-updated: 2026-09-21
+updated: 2026-10-28
 ---
 
 # ComfyUI with the /comfyui endpoint
@@ -85,7 +85,10 @@ is not ready, with different messages:
 The second rule is what `ignoreWebsockets` does everywhere, not something
 `/comfyui/` adds; it also keeps the connection out of the scheduler entirely.
 The endpoint's own rule matches on the path alone, so it also covers a plain
-`GET` to `/ws` that carries no upgrade headers.
+`GET` to `/ws` that carries no upgrade headers. While the model is loaded, an
+ignored `GET` is kept out of the scheduler the same way: it takes no
+concurrency slot, is not counted in flight, and does not reset the `ttl`, so
+an open tab's job polling does not keep `comfyui_auto` resident.
 
 The ignored paths are fixed. They are the same set you would configure by hand
 to serve ComfyUI through `/upstream/` instead:
@@ -170,6 +173,8 @@ listing `ignorePaths` at all replaces the default instead of adding to it.
 to `/comfyui/` only, and is also where you add paths that list does not cover.
 Two differences: listing any pattern replaces the static-asset default, so
 repeat it, and `ignorePaths` matches every method rather than `GET` alone.
+Both keep an ignored request on a loaded model out of the scheduler and off
+the `ttl` timer (see `guides/connectivity/upstream-passthrough`).
 
 ## Related
 
