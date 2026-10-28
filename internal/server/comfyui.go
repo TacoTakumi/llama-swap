@@ -73,7 +73,9 @@ func (s *Server) handleComfyUI(w http.ResponseWriter, r *http.Request) {
 	r.URL.RawPath = escapedRemaining
 
 	// Only a GET is ignored. A write is a deliberate action even on an ignored
-	// path, so queueing a job still starts the model.
+	// path, so queueing a job still starts the model. An ignored GET on a
+	// loaded model is marked so that serving it does not count as model
+	// activity: the tab's job polling must not reset the idle TTL either.
 	if r.Method == http.MethodGet && comfyUIIgnoresPath(remainingPath) {
 		state, ok := s.local.RunningModels()[config.ComfyUIModelID]
 		if !ok || state != process.StateReady {
@@ -81,6 +83,7 @@ func (s *Server) handleComfyUI(w http.ResponseWriter, r *http.Request) {
 				"model "+config.ComfyUIModelID+" is not loaded; ignored ComfyUI paths cannot start it")
 			return
 		}
+		*r = *swaputil.WithIgnoredPath(r)
 	}
 
 	*r = *r.WithContext(swaputil.SetContext(r.Context(), swaputil.ReqContextData{

@@ -280,3 +280,43 @@ func TestServer_ComfyUIIgnorePaths(t *testing.T) {
 		}
 	}
 }
+
+// TestServer_HandleComfyUI_IgnoredGetMarksLoadedModel checks that an ignored
+// GET on a loaded comfyui_auto is forwarded marked as an ignored path, so the
+// frontend's job polling does not count as model activity, while other
+// requests to the loaded model are not marked.
+func TestServer_HandleComfyUI_IgnoredGetMarksLoadedModel(t *testing.T) {
+	local := newStubRouter([]string{config.ComfyUIModelID}, "")
+	local.running = map[string]process.ProcessState{config.ComfyUIModelID: process.StateReady}
+	var marked bool
+	local.serveHTTP = func(w http.ResponseWriter, r *http.Request) {
+		marked = swaputil.IsIgnoredPath(r)
+		w.WriteHeader(http.StatusOK)
+	}
+	s := newTestServer(local, newStubRouter(nil, ""))
+	s.cfg = config.Config{Models: map[string]config.ModelConfig{config.ComfyUIModelID: {}}}
+	s.routes()
+
+	for _, tt := range []struct {
+		name   string
+		method string
+		target string
+		want   bool
+	}{
+		{name: "jobs poll", method: http.MethodGet, target: "/comfyui/api/jobs", want: true},
+		{name: "asset", method: http.MethodGet, target: "/comfyui/assets/app.js", want: true},
+		{name: "api path", method: http.MethodGet, target: "/comfyui/api/prompt", want: false},
+		{name: "root", method: http.MethodGet, target: "/comfyui/", want: false},
+		{name: "non-GET jobs", method: http.MethodPost, target: "/comfyui/api/jobs", want: false},
+	} {
+		marked = false
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, httptest.NewRequest(tt.method, tt.target, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: status=%d body=%q", tt.name, w.Code, w.Body.String())
+		}
+		if marked != tt.want {
+			t.Errorf("%s: marked=%v want %v", tt.name, marked, tt.want)
+		}
+	}
+}

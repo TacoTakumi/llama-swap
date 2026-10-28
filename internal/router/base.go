@@ -485,20 +485,25 @@ func (b *baseRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Ignored websocket connections are deliberately kept outside the
-	// scheduler: they cannot start or queue a model, consume concurrency, or
-	// prevent another request from swapping the process out. A process may stop
-	// immediately after this readiness check; dropping that websocket is the
-	// intended tradeoff of opting out of lifecycle tracking.
-	if swaputil.ShouldIgnoreWebsocket(req, b.config) {
+	// Ignored websocket connections and requests to ignored paths are
+	// deliberately kept outside the scheduler: they cannot start or queue a
+	// model, consume concurrency, or prevent another request from swapping the
+	// process out. A process may stop immediately after this readiness check;
+	// dropping that request is the intended tradeoff of opting out of
+	// lifecycle tracking.
+	if swaputil.ShouldIgnore(req, b.config) {
 		p, ok := b.processes[data.ModelID]
 		if !ok {
 			swaputil.SendError(w, req, scheduler.ErrModelNotFound)
 			return
 		}
 		if p.State() != process.StateReady {
+			kind := "ignored websocket requests"
+			if swaputil.IsIgnoredPath(req) {
+				kind = "ignored paths"
+			}
 			swaputil.SendResponse(w, req, http.StatusConflict,
-				fmt.Sprintf("model %s is not loaded; ignored websocket requests cannot start it", data.ModelID))
+				fmt.Sprintf("model %s is not loaded; %s cannot start it", data.ModelID, kind))
 			return
 		}
 		p.ServeHTTP(w, req)

@@ -506,7 +506,9 @@ func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
 	// If the path matches an upstream.ignorePaths entry and the model is
 	// not already loaded, refuse the request without triggering a swap. The
 	// server was not able to process the response because the model was not
-	// already loaded.
+	// already loaded. When the model is loaded, the request is marked as an
+	// ignored path so that serving it does not count as model activity: it
+	// stays outside the scheduler and does not reset the idle TTL.
 	for _, re := range s.cfg.Upstream.IgnorePaths {
 		if !re.MatchString(remainingPath) {
 			continue
@@ -518,6 +520,7 @@ func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
 					fmt.Sprintf("model %s is not loaded; path matches upstream.ignorePaths", modelID))
 				return
 			}
+			*r = *swaputil.WithIgnoredPath(r)
 		}
 		// Either the model is already loaded (no swap would be triggered)
 		// or this is a peer model (peer proxying never swaps). Fall through

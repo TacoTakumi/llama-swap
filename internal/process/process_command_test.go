@@ -16,6 +16,7 @@ import (
 
 	"github.com/mostlygeek/llama-swap/internal/config"
 	"github.com/mostlygeek/llama-swap/internal/logmon"
+	"github.com/mostlygeek/llama-swap/internal/swaputil"
 )
 
 const (
@@ -873,5 +874,70 @@ func TestProcessCommand_ConcurrentRunStop(t *testing.T) {
 				p.Stop(testStopTimeout) //nolint: errcheck
 			}
 		}
+	}
+}
+
+// TestProcessCommand_TTL_IgnoresIgnoredPath mirrors the websocket case: a
+// request to an ignored path held open through ServeHTTP is neither counted in
+// flight nor allowed to reset the TTL, so the process still stops on time.
+func TestProcessCommand_TTL_IgnoresIgnoredPath(t *testing.T) {
+	skipIfNoSimpleResponder(t)
+
+	requestStarted := make(chan struct{})
+	releaseRequest := make(chan struct{})
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		close(requestStarted)
+		<-releaseRequest
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(mock.Close)
+
+	cmd, _ := simpleResponderCmd(t, "-silent")
+	p := newProcessCommand(t, config.ModelConfig{
+		Cmd:                cmd,
+		Proxy:              mock.URL,
+		CheckEndpoint:      "/health",
+		HealthCheckTimeout: 10,
+		UnloadAfter:        1,
+		UnloadTimeout:      1,
+	})
+	runErr := runAsync(t, p)
+
+	requestDone := make(chan struct{})
+	go func() {
+		defer close(requestDone)
+		r := swaputil.WithIgnoredPath(httptest.NewRequest(http.MethodGet, "/api/jobs", nil))
+		p.ServeHTTP(httptest.NewRecorder(), r)
+	}()
+
+	select {
+	case <-requestStarted:
+	case <-time.After(testReturnTimeout):
+		t.Fatal("ignored path request did not reach upstream")
+	}
+	waitForState(t, p, StateStopped)
+	select {
+	case <-requestDone:
+		t.Fatal("ignored path request completed before it was released")
+	default:
+	}
+
+	close(releaseRequest)
+	select {
+	case <-requestDone:
+	case <-time.After(testReturnTimeout):
+		t.Fatal("ignored path request did not finish after release")
+	}
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("Run() after TTL stop: %v", err)
+		}
+	case <-time.After(testReturnTimeout):
+		t.Fatal("Run() did not return after TTL stop")
 	}
 }

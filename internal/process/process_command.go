@@ -854,7 +854,10 @@ func (p *ProcessCommand) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		swaputil.SendResponse(w, r, http.StatusServiceUnavailable, fmt.Sprintf("[%s] process is not ready", p.id))
 		return
 	}
-	if p.config.Compat.IgnoreWebsockets && swaputil.IsWebSocketUpgrade(r) {
+	// An ignored websocket or a request to an ignored path is not model
+	// activity: it is neither counted in flight nor allowed to reset the
+	// idle TTL, so a client that polls it cannot keep the model loaded.
+	if swaputil.IsIgnoredPath(r) || p.config.Compat.IgnoreWebsockets && swaputil.IsWebSocketUpgrade(r) {
 		(*fn)(w, r)
 		return
 	}

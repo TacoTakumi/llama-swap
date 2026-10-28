@@ -1030,3 +1030,76 @@ func anySliceStrEqual(v any, want []string) bool {
 	}
 	return true
 }
+
+// TestServer_HandleUpstream_IgnorePathsMarksLoadedModel checks that a matched
+// path on a loaded local model is forwarded marked as an ignored path, and that
+// nothing else is.
+func TestServer_HandleUpstream_IgnorePathsMarksLoadedModel(t *testing.T) {
+	pattern := regexp.MustCompile(`^/vram/`)
+	newServer := func(local, peer *stubRouter) *Server {
+		s := newTestServer(local, peer)
+		s.cfg = config.Config{
+			Models: map[string]config.ModelConfig{"m1": {}},
+			Upstream: config.UpstreamConfig{
+				IgnorePaths: []*regexp.Regexp{pattern},
+			},
+		}
+		return s
+	}
+	capture := func(r *stubRouter, marked *bool) {
+		r.serveHTTP = func(w http.ResponseWriter, req *http.Request) {
+			*marked = swaputil.IsIgnoredPath(req)
+			w.WriteHeader(http.StatusOK)
+		}
+	}
+
+	t.Run("matched path, model loaded, is marked", func(t *testing.T) {
+		local := newStubRouter([]string{"m1"}, "")
+		local.running = map[string]process.ProcessState{"m1": process.StateReady}
+		var marked bool
+		capture(local, &marked)
+		s := newServer(local, newStubRouter(nil, ""))
+
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/upstream/m1/vram/lend", strings.NewReader(`{}`)))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+		if !marked {
+			t.Error("matched path on a loaded model was not marked as an ignored path")
+		}
+	})
+
+	t.Run("non-matched path, model loaded, is not marked", func(t *testing.T) {
+		local := newStubRouter([]string{"m1"}, "")
+		local.running = map[string]process.ProcessState{"m1": process.StateReady}
+		var marked bool
+		capture(local, &marked)
+		s := newServer(local, newStubRouter(nil, ""))
+
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/upstream/m1/props", nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+		if marked {
+			t.Error("non-matched path was marked as an ignored path")
+		}
+	})
+
+	t.Run("matched path, peer model, is not marked", func(t *testing.T) {
+		peer := newStubRouter([]string{"m1"}, "")
+		var marked bool
+		capture(peer, &marked)
+		s := newServer(newStubRouter(nil, ""), peer)
+
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/upstream/m1/vram/state", nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+		if marked {
+			t.Error("peer model request was marked as an ignored path")
+		}
+	})
+}

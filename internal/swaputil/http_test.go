@@ -1009,3 +1009,25 @@ func TestFetchContext_BodyOverSizeCap(t *testing.T) {
 		t.Fatalf("err = %v, want it to wrap *http.MaxBytesError with Limit 10", err)
 	}
 }
+
+func TestIgnoredPath_MarkAndRead(t *testing.T) {
+	cfg := config.Config{Models: map[string]config.ModelConfig{"m1": {}}}
+	plain := httptest.NewRequest(http.MethodGet, "/test?model=m1", nil)
+	if IsIgnoredPath(plain) {
+		t.Fatal("IsIgnoredPath = true for an unmarked request")
+	}
+	if ShouldIgnore(plain, cfg) {
+		t.Fatal("ShouldIgnore = true for a plain request")
+	}
+
+	marked := WithIgnoredPath(plain)
+	if !IsIgnoredPath(marked) {
+		t.Fatal("IsIgnoredPath = false for a marked request")
+	}
+	if !ShouldIgnore(marked, cfg) {
+		t.Fatal("ShouldIgnore = false for a marked request")
+	}
+	if IsIgnoredPath(plain) {
+		t.Fatal("marking returned a new request but changed the original")
+	}
+}

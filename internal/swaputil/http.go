@@ -78,6 +78,35 @@ func ShouldIgnoreWebsocket(r *http.Request, cfg config.Config) bool {
 	return ok && mc.Compat.IgnoreWebsockets
 }
 
+// ignoredPathKey marks a request to an ignored path in its context.
+type ignoredPathKey struct{}
+
+// WithIgnoredPath returns r marked as a request to an ignored path: one that
+// matched upstream.ignorePaths, or the ComfyUI endpoint's built-in list, while
+// its model was ready. The caller has already refused the request with a 409
+// when the model was not ready, so the mark only ever reaches a ready model.
+//
+// A marked request is served the way an ignored websocket is: it stays outside
+// the scheduler, takes no concurrency slot, is not counted in flight, and does
+// not reset the model's idle TTL. Without the mark a client that polls an
+// ignored path (a UI tab, a scraper, a probe) keeps the model loaded forever.
+func WithIgnoredPath(r *http.Request) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), ignoredPathKey{}, true))
+}
+
+// IsIgnoredPath reports whether r was marked by WithIgnoredPath.
+func IsIgnoredPath(r *http.Request) bool {
+	v, _ := r.Context().Value(ignoredPathKey{}).(bool)
+	return v
+}
+
+// ShouldIgnore reports whether r must stay outside model lifecycle activity:
+// an ignored websocket (ShouldIgnoreWebsocket) or a request to an ignored
+// path (IsIgnoredPath).
+func ShouldIgnore(r *http.Request, cfg config.Config) bool {
+	return IsIgnoredPath(r) || ShouldIgnoreWebsocket(r, cfg)
+}
+
 // StatusClientClosedRequest mirrors nginx's non-standard 499 "Client Closed
 // Request". llama-swap records it when a client disconnects before any
 // response was written, so an abandoned request is not filed as a success (a

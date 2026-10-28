@@ -792,3 +792,86 @@ func TestBaseRouter_Shutdown_StopsAllProcesses(t *testing.T) {
 		t.Errorf("second Shutdown returned nil, want error")
 	}
 }
+
+func TestBaseRouter_IgnoredPathRejectsModelUnlessReady(t *testing.T) {
+	for _, state := range []process.ProcessState{process.StateStopped, process.StateStarting, process.StateStopping} {
+		t.Run(string(state), func(t *testing.T) {
+			a := newFakeProcess("a")
+			a.autoReady = true
+			if state != process.StateStopped {
+				a.setState(state)
+			}
+			b := newTestBase(t, map[string]process.Process{"a": a}, &stubPlanner{})
+
+			r := swaputil.WithIgnoredPath(httptest.NewRequest(http.MethodGet, "/test?model=a", nil))
+			w := httptest.NewRecorder()
+			b.ServeHTTP(w, r)
+
+			if w.Code != http.StatusConflict {
+				t.Fatalf("status=%d want %d body=%q", w.Code, http.StatusConflict, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), "ignored paths cannot start it") {
+				t.Errorf("body=%q want the ignored-path message", w.Body.String())
+			}
+			if got := a.runCalls.Load(); got != 0 {
+				t.Errorf("runCalls=%d want 0", got)
+			}
+			if got := a.serveCalls.Load(); got != 0 {
+				t.Errorf("serveCalls=%d want 0", got)
+			}
+		})
+	}
+}
+
+// TestBaseRouter_IgnoredPathBypassesScheduler holds a model's single
+// concurrency slot with an ordinary request, then shows that a second ordinary
+// request is refused while a request to an ignored path reaches the process
+// at once, outside the scheduler.
+func TestBaseRouter_IgnoredPathBypassesScheduler(t *testing.T) {
+	a := newFakeProcess("a")
+	a.markReady()
+	a.serveBlock = make(chan struct{})
+	conf := config.Config{
+		HealthCheckTimeout: 5,
+		Models:             map[string]config.ModelConfig{"a": {ConcurrencyLimit: 1}},
+	}
+	b := newTestBaseWithConfig(t, conf, map[string]process.Process{"a": a}, &stubPlanner{})
+
+	busyDone := make(chan struct{})
+	go func() {
+		defer close(busyDone)
+		b.ServeHTTP(httptest.NewRecorder(), newRequest("a"))
+	}()
+	waitSignal(t, a.serveStarted, "busy request start")
+
+	w := httptest.NewRecorder()
+	b.ServeHTTP(w, newRequest("a"))
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("second ordinary request status=%d want %d body=%q", w.Code, http.StatusTooManyRequests, w.Body.String())
+	}
+	if got := a.serveCalls.Load(); got != 1 {
+		t.Fatalf("serveCalls=%d after the refused request, want 1", got)
+	}
+
+	ignoredW := httptest.NewRecorder()
+	ignoredDone := make(chan struct{})
+	go func() {
+		defer close(ignoredDone)
+		r := swaputil.WithIgnoredPath(httptest.NewRequest(http.MethodGet, "/test?model=a", nil))
+		b.ServeHTTP(ignoredW, r)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for a.serveCalls.Load() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("ignored path request did not reach the process while the concurrency slot was held")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	close(a.serveBlock)
+	waitSignal(t, ignoredDone, "ignored path request finish")
+	waitSignal(t, busyDone, "busy request finish")
+	if ignoredW.Code != http.StatusOK {
+		t.Fatalf("ignored path request status=%d want 200 body=%q", ignoredW.Code, ignoredW.Body.String())
+	}
+}
